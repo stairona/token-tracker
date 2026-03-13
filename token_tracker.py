@@ -27,21 +27,30 @@ CONTEXT_LIMIT  = 262144   # stepfun/step-3.5-flash:free
 ACTIVE_WINDOW  = 1800     # seconds — session shown if modified within 30 min
 WARN_PCT       = 60       # yellow threshold
 CRITICAL_PCT   = 85       # red threshold
+TAIL_READ_BYTES = 512 * 1024  # read tail first for large logs
+
+# Cache token parsing by file signature (mtime, size)
+_TOKEN_CACHE = {}
 
 
 # ── Session helpers ───────────────────────────────────────────────────────────
 def _clean_name(folder: str) -> str:
     """Turn a hashed Claude project folder name into a readable project name."""
     name = folder
-    for prefix in [
-        "-Users-nicolasaguirre-Development-light-projects-",
-        "-Users-nicolasaguirre-Development-light-projects",
-        "-Users-nicolasaguirre-Development-",
-        "-Users-nicolasaguirre-",
-    ]:
+    home_parts = str(Path.home()).strip("/").split("/")
+    home_prefixes = []
+    if home_parts:
+        joined = "-".join(home_parts)
+        home_prefixes = [f"-{joined}-", f"-{joined}"]
+    for prefix in home_prefixes:
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
+    if name.startswith("-"):
+        parts = name.strip("-").split("-")
+        if len(parts) >= 3 and parts[0] == "Users":
+            # Trim "/Users/<username>" style prefixes for portability.
+            name = "-".join(parts[2:])
     cleaned = name.strip("-").replace("-", " ").strip()
     return cleaned or "unknown"
 
@@ -51,28 +60,53 @@ def _read_tokens(path: str):
     inp = out = 0
     cwd = ""
     try:
-        with open(path, "r", errors="replace") as f:
-            lines = f.readlines()
-        for line in reversed(lines):
-            try:
-                e = json.loads(line.strip())
-                if not cwd:
-                    cwd = e.get("cwd", "")
-                msg = e.get("message", {})
-                if not isinstance(msg, dict):
+        stat = os.stat(path)
+        sig = (stat.st_mtime, stat.st_size)
+        cached = _TOKEN_CACHE.get(path)
+        if cached and cached[0] == sig:
+            return cached[1], cached[2], cached[3]
+
+        def parse_lines(lines):
+            nonlocal inp, out, cwd
+            for line in reversed(lines):
+                try:
+                    e = json.loads(line.strip())
+                    if not cwd:
+                        cwd = e.get("cwd", "")
+                    msg = e.get("message", {})
+                    if not isinstance(msg, dict):
+                        continue
+                    u = msg.get("usage", {})
+                    if not u:
+                        continue
+                    i = u.get("input_tokens", 0) or 0
+                    o = u.get("output_tokens", 0) or 0
+                    if i or o:
+                        inp, out = i, o
+                        return True
+                except (json.JSONDecodeError, KeyError):
                     continue
-                u = msg.get("usage", {})
-                if not u:
-                    continue
-                i = u.get("input_tokens", 0) or 0
-                o = u.get("output_tokens", 0) or 0
-                if i or o:
-                    inp, out = i, o
-                    break
-            except (json.JSONDecodeError, KeyError):
-                continue
+            return False
+
+        with open(path, "rb") as f:
+            size = stat.st_size
+            start = max(0, size - TAIL_READ_BYTES)
+            f.seek(start)
+            chunk = f.read().decode("utf-8", errors="replace")
+            if start > 0:
+                parts = chunk.splitlines()
+                lines = parts[1:] if len(parts) > 1 else []
+            else:
+                lines = chunk.splitlines()
+            found = parse_lines(lines)
+
+            if not found and start > 0:
+                f.seek(0)
+                full_lines = f.read().decode("utf-8", errors="replace").splitlines()
+                parse_lines(full_lines)
     except OSError:
         pass
+    _TOKEN_CACHE[path] = (sig if "sig" in locals() else (0, 0), inp, out, cwd)
     return inp, out, cwd
 
 
@@ -87,6 +121,7 @@ def get_sessions():
         return []
     files.sort(key=os.path.getmtime, reverse=True)
     now = time.time()
+    newest = files[0]
 
     sessions = []
     seen = set()
@@ -95,11 +130,14 @@ def get_sessions():
             mtime = os.path.getmtime(path)
         except OSError:
             continue
+        if path != newest and (now - mtime) > ACTIVE_WINDOW:
+            continue
         inp, out, cwd = _read_tokens(path)
         label = Path(cwd).name if cwd else _clean_name(Path(path).parent.name)
-        if label in seen:
+        session_key = cwd or str(Path(path).parent)
+        if session_key in seen:
             continue
-        seen.add(label)
+        seen.add(session_key)
         sessions.append({
             "label": label,
             "input_tokens": inp,
@@ -182,8 +220,8 @@ def icon(pct):
 # ── App ───────────────────────────────────────────────────────────────────────
 class TokenTrackerApp(rumps.App):
     """
-    Menu items are created ONCE in __init__ and their .title is updated
-    from the background polling thread. rumps is thread-safe for .title updates.
+    Menu items are created ONCE in __init__.
+    Background thread only computes state; UI updates happen in timer callback.
     No menu.add() or menu.clear() calls after init — that causes crashes.
     """
 
@@ -217,22 +255,52 @@ class TokenTrackerApp(rumps.App):
             self.item_quit,
         ]
 
-        self._primary = None  # set by polling thread, read by callbacks
+        self._primary = None
+        self._latest_state = None
+        self._state_lock = threading.Lock()
+        self._refresh_requested = threading.Event()
+        self._handoff_flash_until = 0.0
         threading.Thread(target=self._poll_loop, daemon=True).start()
+        self._ui_timer = rumps.Timer(self._drain_updates, 1)
+        self._ui_timer.start()
 
     # ── Polling ───────────────────────────────────────────────────────────────
     def _poll_loop(self):
         while True:
             try:
-                self._update()
+                sessions = get_sessions()
+                now_str = datetime.now().strftime("%H:%M:%S")
+                with self._state_lock:
+                    self._latest_state = {"sessions": sessions, "now_str": now_str, "error": None}
             except Exception as e:
-                self.title = "❌"
                 print(f"[token-tracker] poll error: {e}")
-            threading.Event().wait(POLL_INTERVAL)
+                with self._state_lock:
+                    self._latest_state = {
+                        "sessions": [],
+                        "now_str": datetime.now().strftime("%H:%M:%S"),
+                        "error": str(e),
+                    }
+            self._refresh_requested.wait(POLL_INTERVAL)
+            self._refresh_requested.clear()
 
-    def _update(self):
-        sessions = get_sessions()
-        now_str  = datetime.now().strftime("%H:%M:%S")
+    def _drain_updates(self, _):
+        state = None
+        with self._state_lock:
+            if self._latest_state is not None:
+                state = self._latest_state
+                self._latest_state = None
+        if state:
+            self._apply_state(state["sessions"], state["now_str"], state["error"])
+        self._maybe_clear_handoff_flash()
+
+    def _maybe_clear_handoff_flash(self):
+        if self._handoff_flash_until and time.time() >= self._handoff_flash_until:
+            self._handoff_flash_until = 0.0
+            self.item_handoff.title = "📋 Copy handoff prompt"
+
+    def _apply_state(self, sessions, now_str, error=None):
+        if error:
+            self.title = "❌"
 
         if not sessions:
             self.title             = "⚪ idle"
@@ -294,13 +362,12 @@ class TokenTrackerApp(rumps.App):
             return
         prompt = build_handoff_prompt(session)
         success = copy_to_clipboard(prompt)
-        original = self.item_handoff.title
         self.item_handoff.title = "✅ Copied! Paste into Claude" if success else "❌ Copy failed — check terminal"
-        threading.Timer(2.5, lambda: setattr(self.item_handoff, "title", original)).start()
+        self._handoff_flash_until = time.time() + 2.5
 
     def _on_refresh(self, _):
         self.title = "⏳"
-        threading.Thread(target=self._update, daemon=True).start()
+        self._refresh_requested.set()
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

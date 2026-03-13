@@ -1,126 +1,83 @@
-# Claude Code Token Tracker
+# Token Tracker
 
-**Real-time token usage monitoring for Claude Code — right in your macOS menu bar.**
-
----
+Real-time token usage for Claude Code in your macOS menu bar.
 
 ## What It Does
 
-Claude Code Token Tracker displays your current token usage in the macOS menu bar, giving you instant visibility into how much of your context window you're using while working with Claude Code.
+Token Tracker reads local Claude Code session files (`~/.claude/projects/**/*.jsonl`) and shows live usage in the menu bar. It is offline-only: no API calls, no network traffic.
 
-The app reads your live Claude Code session data directly from local files (`~/.claude/projects/`) and updates every 10 seconds. No API calls, no network traffic — completely offline and private.
-
----
-
-## Why It's Useful
-
-Claude Code models have finite context windows. When you exceed these limits, you start losing conversation history and may need to restart sessions. This tool helps you:
-
-- **Monitor usage in real-time** without interrupting your workflow
-- **Know when to run `/compact`** to free up context before hitting limits
-- **Avoid surprise session resets** due to context overflow
-- **Track token consumption** across different projects
-
----
+Key features:
+- Multi-session awareness (shows the hottest session and other active projects)
+- Context percentage with color indicator
+- One-click handoff prompt copied to clipboard when usage is high
+- Simple refresh button in the menu
 
 ## How It Works
 
-1. Polls the `~/.claude/projects/` directory for the most recently modified `.jsonl` session file
-2. Extracts `input_tokens` and `output_tokens` from the latest non-zero usage entry
-3. Calculates the percentage of your context limit being used
-4. Displays the information in the menu bar with color-coded indicators
-
-All processing happens locally on your machine. No data is sent to any external server.
-
----
+1. Scans the session files under `~/.claude/projects/`
+2. Reads the most recent non-zero token usage entries
+3. Calculates usage as a percent of `CONTEXT_LIMIT`
+4. Displays a summary in the menu bar and details in the dropdown
 
 ## Requirements
 
-- **macOS only** (uses the `rumps` library for menu bar integration)
-- **Python 3.11** (installed via Homebrew at `/opt/homebrew/bin/python3.11`)
-- **Python libraries:** `rumps` and `requests`
-
----
+- macOS (uses `rumps` for the menu bar)
+- Python 3.11 (Homebrew `/opt/homebrew/bin/python3.11` recommended)
+- Python library: `rumps`
 
 ## Installation
 
 ```bash
-# Install required Python packages
-pip install rumps requests
+pip install rumps
 
-# Clone or download this repository
-cd /path/to/claude-token-tracker
-
-# Run the app
+cd /path/to/token-tracker
 /opt/homebrew/bin/python3.11 token_tracker.py &
 ```
 
-To stop it: `pkill -f token_tracker.py`
+Stop it with:
 
----
+```bash
+pkill -f token_tracker.py
+```
 
 ## Auto-Launch with Claude Code
 
-Add this function to your `~/.zshrc` so the tracker launches automatically every time you run `claude` and stops when you exit:
+Add this to your `~/.zshrc` to run the tracker when you start Claude Code:
 
 ```zsh
 function claude() {
   pkill -f token_tracker.py 2>/dev/null
-  /opt/homebrew/bin/python3.11 /path/to/claude-token-tracker/token_tracker.py &
+  /opt/homebrew/bin/python3.11 /path/to/token-tracker/token_tracker.py &
   command claude "$@"
   pkill -f token_tracker.py 2>/dev/null
 }
 ```
 
-Replace `/path/to/claude-token-tracker/` with the actual path. Restart your shell or run `source ~/.zshrc` to activate.
-
----
+Replace `/path/to/token-tracker/` with your actual path.
 
 ## Menu Bar Indicators
 
 | Icon | Usage | Action |
 |------|-------|--------|
-| 🟢 | **Under 60%** | Comfortable — no action needed |
-| 🟡 | **60% - 85%** | Consider running `/compact` soon |
-| 🔴 | **Above 85%** | Run `/compact` immediately |
+| 🟢 | Under 60% | No action needed |
+| 🟡 | 60% - 85% | Consider running `/compact` |
+| 🔴 | Above 85% | Run `/compact` immediately |
 
-Click the app's dropdown menu to see detailed statistics and a "Refresh now" button.
+The dropdown shows:
+- Tokens in/out
+- Context bar and percent
+- Primary project name
+- Also active projects (if any)
+- Handoff prompt button
 
----
+## Configuration
 
-## Context Window Limits
+Edit [token_tracker.py](token_tracker.py) to adjust:
 
-Different Claude Code models have different context sizes. The default limit in the code is set for `stepfun/step-3.5-flash:free`:
-
-| Model | Context Limit |
-|-------|---------------|
-| stepfun/step-3.5-flash:free | 262,144 tokens |
-| qwen/qwen3-coder:free | 131,072 tokens |
-| openrouter/free | varies (check provider) |
-
----
-
-## Changing the Context Limit
-
-Edit `token_tracker.py` at line 19:
-
-```python
-CONTEXT_LIMIT = 262144  # Change this to your model's limit
-```
-
-For example, for `qwen/qwen3-coder:free`:
-```python
-CONTEXT_LIMIT = 131072
-```
-
-You can also adjust the poll interval (line 18) if you want more or less frequent updates.
-
----
+- `CONTEXT_LIMIT`: model context size (default 262144)
+- `POLL_INTERVAL`: refresh interval in seconds (default 10)
+- `ACTIVE_WINDOW`: how long a session counts as active (default 1800 seconds)
 
 ## License
 
 MIT
-
----
-
-**Happy coding!** May your context windows stay spacious and your sessions uninterrupted.

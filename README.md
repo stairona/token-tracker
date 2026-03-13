@@ -25,6 +25,15 @@ Key features:
 - Python 3.11 (Homebrew `/opt/homebrew/bin/python3.11` recommended)
 - Python library: `rumps`
 
+## Quickstart
+
+```bash
+git clone https://github.com/stairona/token-tracker.git
+cd token-tracker
+pip install rumps
+/opt/homebrew/bin/python3.11 token_tracker.py &
+```
+
 ## Installation
 
 ```bash
@@ -95,6 +104,15 @@ Edit [token_tracker.py](token_tracker.py) to adjust:
 - `CONTEXT_LIMIT`: model context size (default 262144)
 - `POLL_INTERVAL`: refresh interval in seconds (default 10)
 - `ACTIVE_WINDOW`: how long a session counts as active (default 1800 seconds)
+
+## Project Layout
+
+```
+token-tracker/
+├── token_tracker.py
+├── README.md
+└── LICENSE
+```
 
 ## License
 

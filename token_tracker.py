@@ -203,10 +203,17 @@ def format_limit(n):
 
 
 def pct_bar(pct, width=12):
-    """Smooth proportional bar using half-block characters for cleaner look."""
+    """Colored emoji block bar — green/yellow/red matching context thresholds."""
     filled = int(width * pct / 100)
-    filled = max(0, min(width, filled))
-    return "▓" * filled + "░" * (width - filled)
+    filled = max(1, min(width, filled)) if pct > 0 else 0
+    empty  = width - filled
+    if pct >= CRITICAL_PCT:
+        block = "🟥"
+    elif pct >= WARN_PCT:
+        block = "🟨"
+    else:
+        block = "🟩"
+    return block * filled + "⬜" * empty
 
 
 def icon(pct):
@@ -243,7 +250,6 @@ class TokenTrackerApp(rumps.App):
             self.item_tokens,
             self.item_ctx,
             self.item_project,
-            None,
             self.item_others,
             None,
             self.item_tip,

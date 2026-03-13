@@ -70,6 +70,24 @@ The dropdown shows:
 - Also active projects (if any)
 - Handoff prompt button
 
+## Multi-Session Behavior
+
+Token Tracker scans all recent Claude Code sessions and highlights the one with the highest context usage. Other active projects appear in a compact "Also active" line so you can see what else is consuming context.
+
+## Handoff Prompt
+
+When your context usage is high (60%+), the menu shows a **Copy handoff prompt** button. This copies a ready-to-paste prompt that tells Claude to update `SESSION_HANDOFF.md` with:
+
+- date/time
+- project + cwd
+- context usage
+- what was done
+- git branch/last commit
+- files changed
+- open next steps
+
+After pasting the prompt in Claude, run `/compact` to free context.
+
 ## Configuration
 
 Edit [token_tracker.py](token_tracker.py) to adjust:

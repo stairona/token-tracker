@@ -30,6 +30,7 @@ ACTIVE_WINDOW  = 1800     # seconds — session shown if modified within 30 min
 WARN_PCT       = 60       # yellow threshold
 CRITICAL_PCT   = 85       # red threshold
 TAIL_READ_BYTES = 512 * 1024  # read tail first for large logs
+MAX_SESSION_ITEMS = 5         # max sessions shown in the picker
 
 # Cache token parsing by file signature (mtime, size)
 _TOKEN_CACHE = {}
@@ -261,6 +262,12 @@ class TokenTrackerApp(rumps.App):
         self.item_project  = rumps.MenuItem("Project: —")
         self.item_others   = rumps.MenuItem(" ")           # secondary sessions
         self.item_tip      = rumps.MenuItem("💡 Run /compact to free context")
+        self.item_handoff_target = rumps.MenuItem("Handoff target: —")
+        self.item_sessions_header = rumps.MenuItem("Active sessions: —")
+        self._session_items = [
+            rumps.MenuItem(" ", callback=self._make_session_select_handler(i))
+            for i in range(MAX_SESSION_ITEMS)
+        ]
         self.item_handoff  = rumps.MenuItem("📋 Copy handoff prompt", callback=self._on_handoff)
         self.item_updated  = rumps.MenuItem("Updated: —")
         self.item_refresh  = rumps.MenuItem("Refresh now", callback=self._on_refresh)
@@ -273,6 +280,9 @@ class TokenTrackerApp(rumps.App):
             self.item_others,
             None,
             self.item_tip,
+            self.item_handoff_target,
+            self.item_sessions_header,
+            *self._session_items,
             self.item_handoff,
             None,
             self.item_updated,
@@ -282,6 +292,9 @@ class TokenTrackerApp(rumps.App):
         ]
 
         self._primary = None
+        self._handoff_target = None
+        self._handoff_target_key = None
+        self._latest_sessions = []
         self._latest_state = None
         self._state_lock = threading.Lock()
         self._refresh_requested = threading.Event()
@@ -335,9 +348,19 @@ class TokenTrackerApp(rumps.App):
             self.item_project.title= "Project: —"
             self.item_others.title = " "
             self.item_tip.title    = "💡 Run /compact to free context"
+            self.item_handoff_target.title = "Handoff target: —"
+            self.item_sessions_header.title = "Active sessions:"
+            self.item_sessions_header.hidden = True
+            for item in self._session_items:
+                item.hidden = True
+                item.enabled = False
+                item.title = ""
             self.item_handoff.title= "📋 Copy handoff prompt"
             self.item_updated.title= f"Updated: {now_str}"
             self._primary          = None
+            self._handoff_target    = None
+            self._handoff_target_key = None
+            self._latest_sessions = []
             return
 
         # Hottest session = highest context usage
@@ -368,6 +391,36 @@ class TokenTrackerApp(rumps.App):
         else:
             self.item_others.title = " "
 
+        # Select handoff target (explicit picker)
+        self._latest_sessions = sessions
+        target = None
+        if self._handoff_target_key:
+            for s in sessions:
+                if (s["cwd"] or s["label"]) == self._handoff_target_key:
+                    target = s
+                    break
+        if not target:
+            target = sessions[0]
+            self._handoff_target_key = target["cwd"] or target["label"]
+        self._handoff_target = target
+        self.item_handoff_target.title = f"Handoff target: {target['label']} ({_short_cwd(target['cwd'])})"
+
+        has_sessions = len(sessions) > 0
+        self.item_sessions_header.title = "Active sessions:"
+        self.item_sessions_header.hidden = not has_sessions
+        for i, item in enumerate(self._session_items):
+            if i < len(sessions):
+                s = sessions[i]
+                is_selected = (s["cwd"] or s["label"]) == self._handoff_target_key
+                prefix = "✓ " if is_selected else "  "
+                item.title = f"{prefix}{s['label']} ({_short_cwd(s['cwd'])})"
+                item.hidden = False
+                item.enabled = True
+            else:
+                item.hidden = True
+                item.enabled = False
+                item.title = ""
+
         # Tip + handoff button
         if pct >= CRITICAL_PCT:
             self.item_tip.title     = f"⛔ Run /compact NOW — context critical"
@@ -383,7 +436,7 @@ class TokenTrackerApp(rumps.App):
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
     def _on_handoff(self, _):
-        session = self._primary
+        session = self._handoff_target or self._primary
         if not session:
             return
         prompt = build_handoff_prompt(session)
@@ -394,6 +447,25 @@ class TokenTrackerApp(rumps.App):
     def _on_refresh(self, _):
         self.title = "⏳"
         self._refresh_requested.set()
+
+    def _make_session_select_handler(self, index: int):
+        def _handler(_):
+            if index >= len(self._latest_sessions):
+                return
+            session = self._latest_sessions[index]
+            self._handoff_target_key = session["cwd"] or session["label"]
+        return _handler
+
+
+def _short_cwd(cwd: str) -> str:
+    if not cwd:
+        return "unknown"
+    home = str(Path.home())
+    display = cwd.replace(home, "~", 1)
+    parts = display.split(os.sep)
+    if len(parts) <= 3:
+        return display
+    return os.sep.join(["…", parts[-2], parts[-1]])
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

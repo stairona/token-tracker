@@ -22,6 +22,8 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+HANDOFF_ROOT_ENV = os.getenv("HANDOFF_ROOT")
+HANDOFF_ROOT = Path(HANDOFF_ROOT_ENV) if HANDOFF_ROOT_ENV else None
 POLL_INTERVAL  = 10       # seconds between polls
 CONTEXT_LIMIT  = 262144   # stepfun/step-3.5-flash:free
 ACTIVE_WINDOW  = 1800     # seconds — session shown if modified within 30 min
@@ -53,6 +55,20 @@ def _clean_name(folder: str) -> str:
             name = "-".join(parts[2:])
     cleaned = name.strip("-").replace("-", " ").strip()
     return cleaned or "unknown"
+
+
+def _project_slug_from_cwd(cwd: str) -> str:
+    """Derive a project slug from cwd, preferring the segment after light-projects."""
+    if not cwd:
+        return "unknown"
+    parts = Path(cwd).parts
+    try:
+        idx = parts.index("light-projects")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    except ValueError:
+        pass
+    return Path(cwd).name or "unknown"
 
 
 def _read_tokens(path: str):
@@ -160,7 +176,11 @@ def build_handoff_prompt(session: dict) -> str:
     inp  = session["input_tokens"]
     out  = session["output_tokens"]
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
-    handoff_path = str(Path(cwd) / "SESSION_HANDOFF.md") if cwd != "unknown" else "SESSION_HANDOFF.md"
+    if HANDOFF_ROOT:
+        slug = _project_slug_from_cwd(cwd).lower().replace(" ", "-")
+        handoff_path = str(HANDOFF_ROOT / "projects" / f"{slug}.md")
+    else:
+        handoff_path = str(Path(cwd) / "SESSION_HANDOFF.md") if cwd != "unknown" else "SESSION_HANDOFF.md"
     return (
         f"Context is at {pct:.0f}% ({inp:,} / {CONTEXT_LIMIT:,} tokens). "
         f"Please update {handoff_path} with:\n"

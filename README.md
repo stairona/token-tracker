@@ -109,8 +109,8 @@ Edit [token_tracker.py](token_tracker.py) to adjust:
 
 ```
 token-tracker/
-├── token_tracker.py
 ├── README.md
+├── token_tracker.py
 └── LICENSE
 ```
 

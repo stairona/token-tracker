@@ -31,6 +31,9 @@ WARN_PCT       = 60       # yellow threshold
 CRITICAL_PCT   = 85       # red threshold
 TAIL_READ_BYTES = 512 * 1024  # read tail first for large logs
 MAX_SESSION_ITEMS = 5         # max sessions shown in the picker
+MAX_FILES_TO_SCAN = 50        # maximum session files to examine per poll (prevents hanging on huge file systems)
+POLL_BUDGET_SEC = 8           # maximum seconds to spend in a single poll cycle (timeout safeguard)
+FILE_OP_TIMEOUT = 5           # seconds timeout for file read operations
 
 # Cache token parsing by file signature (mtime, size)
 _TOKEN_CACHE = {}
@@ -76,9 +79,16 @@ def _read_tokens(path: str):
     """Read (input_tokens, output_tokens, cwd) from most recent non-zero usage entry."""
     inp = out = 0
     cwd = ""
+    sig = (0, 0)
     try:
         stat = os.stat(path)
         sig = (stat.st_mtime, stat.st_size)
+
+        # Skip extremely large files to avoid memory/time issues (unlikely but safe)
+        if stat.st_size > 100_000_000:  # 100 MB
+            print(f"[token-tracker] skip large file: {path} ({stat.st_size} bytes)")
+            return 0, 0, ""
+
         cached = _TOKEN_CACHE.get(path)
         if cached and cached[0] == sig:
             return cached[1], cached[2], cached[3]
@@ -101,7 +111,7 @@ def _read_tokens(path: str):
                     if i or o:
                         inp, out = i, o
                         return True
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, ValueError):
                     continue
             return False
 
@@ -118,12 +128,19 @@ def _read_tokens(path: str):
             found = parse_lines(lines)
 
             if not found and start > 0:
+                # Rare: the non-zero entry might be before the tail; read whole file as fallback
+                # But only if file isn't huge (already checked)
                 f.seek(0)
                 full_lines = f.read().decode("utf-8", errors="replace").splitlines()
                 parse_lines(full_lines)
-    except OSError:
-        pass
-    _TOKEN_CACHE[path] = (sig if "sig" in locals() else (0, 0), inp, out, cwd)
+    except Exception as e:
+        # Comprehensive catch: OSError, JSON errors, etc.
+        # Do not propagate; just return zeros and log minimal message to avoid spam
+        # Use print since logging may not be configured.
+        print(f"[token-tracker] error reading {path}: {e}")
+    finally:
+        # Always update cache with what we found (could be zeros)
+        _TOKEN_CACHE[path] = (sig, inp, out, cwd)
     return inp, out, cwd
 
 
@@ -131,25 +148,47 @@ def get_sessions():
     """
     Return all sessions modified within ACTIVE_WINDOW, sorted by recency.
     Falls back to the single most recent session if none are within the window.
+    Implements resilience: limits files scanned, enforces poll budget timeout.
     """
     pattern = str(CLAUDE_PROJECTS_DIR / "**" / "*.jsonl")
-    files = [f for f in glob.glob(pattern, recursive=True) if "subagents" not in f]
-    if not files:
+    try:
+        all_files = [f for f in glob.glob(pattern, recursive=True) if "subagents" not in f]
+    except Exception as e:
+        print(f"[token-tracker] glob error: {e}")
         return []
-    files.sort(key=os.path.getmtime, reverse=True)
+
+    if not all_files:
+        return []
+
+    # Sort by modification time (newest first) and limit scan to protect against huge filesystems
+    all_files.sort(key=os.path.getmtime, reverse=True)
+    files = all_files[:MAX_FILES_TO_SCAN]
+
     now = time.time()
     newest = files[0]
 
     sessions = []
     seen = set()
+    start_time = time.time()
+
     for path in files:
+        # Budget check: if we've spent too much time, stop scanning
+        if time.time() - start_time > POLL_BUDGET_SEC:
+            print(f"[token-tracker] poll budget exhausted after processing {len(sessions)} sessions")
+            break
+
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             continue
         if path != newest and (now - mtime) > ACTIVE_WINDOW:
             continue
-        inp, out, cwd = _read_tokens(path)
+        try:
+            inp, out, cwd = _read_tokens(path)
+        except Exception as e:
+            # Don't let one bad file break the whole poll
+            print(f"[token-tracker] skip {path}: {e}")
+            continue
         label = Path(cwd).name if cwd else _clean_name(Path(path).parent.name)
         session_key = cwd or str(Path(path).parent)
         if session_key in seen:
@@ -260,7 +299,6 @@ class TokenTrackerApp(rumps.App):
         self.item_tokens   = rumps.MenuItem("In: —   Out: — tokens")
         self.item_ctx      = rumps.MenuItem("Context: —")
         self.item_project  = rumps.MenuItem("Project: —")
-        self.item_others   = rumps.MenuItem(" ")           # secondary sessions
         self.item_tip      = rumps.MenuItem("💡 Run /compact to free context")
         self.item_handoff_target = rumps.MenuItem("Handoff target: —")
         self.item_sessions_header = rumps.MenuItem("Active sessions: —")
@@ -277,14 +315,14 @@ class TokenTrackerApp(rumps.App):
             self.item_tokens,
             self.item_ctx,
             self.item_project,
-            self.item_others,
-            None,
-            self.item_tip,
+            None,  # separator
             self.item_handoff_target,
-            self.item_sessions_header,
-            *self._session_items,
             self.item_handoff,
             None,
+            self.item_sessions_header,
+            *self._session_items,
+            None,
+            self.item_tip,
             self.item_updated,
             self.item_refresh,
             None,
@@ -346,7 +384,6 @@ class TokenTrackerApp(rumps.App):
             self.item_tokens.title = "No Claude sessions found"
             self.item_ctx.title    = "Context: —"
             self.item_project.title= "Project: —"
-            self.item_others.title = " "
             self.item_tip.title    = "💡 Run /compact to free context"
             self.item_handoff_target.title = "Handoff target: —"
             self.item_sessions_header.title = "Active sessions:"
@@ -382,14 +419,6 @@ class TokenTrackerApp(rumps.App):
             f"  ({format_tokens(inp)}/{format_tokens(CONTEXT_LIMIT)})"
         )
         self.item_project.title = f"Project: {label}"
-
-        # Other active sessions
-        others = [s for s in sessions if s["label"] != label]
-        if others:
-            parts = [f"{s['label']} {s['pct']:.0f}%" for s in others[:3]]
-            self.item_others.title = "Also active: " + " | ".join(parts)
-        else:
-            self.item_others.title = " "
 
         # Select handoff target (explicit picker)
         self._latest_sessions = sessions

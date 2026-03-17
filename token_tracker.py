@@ -40,6 +40,8 @@ MAX_SESSION_ITEMS = _config.MAX_SESSION_ITEMS
 MAX_FILES_TO_SCAN = _config.MAX_FILES_TO_SCAN
 POLL_BUDGET_SEC = _config.POLL_BUDGET_SEC
 FILE_OP_TIMEOUT = _config.FILE_OP_TIMEOUT
+LABEL_STYLE = _config.LABEL_STYLE
+CUSTOM_LABEL_TEMPLATE = _config.CUSTOM_LABEL_TEMPLATE
 
 # Cache token parsing by file signature (mtime, size)
 _TOKEN_CACHE = {}
@@ -67,31 +69,70 @@ def _clean_name(folder: str) -> str:
     return cleaned or "unknown"
 
 
-def _make_label(cwd: str, folder_name: str) -> str:
-    """Create a clear, distinguishable label for a session using directory structure."""
-    if cwd:
-        p = Path(cwd)
-        home = str(Path.home())
+def _make_label(cwd: str, folder_name: str, pct: float = 0.0) -> str:
+    """
+    Create a clear, distinguishable label for a session.
+    Formatting is controlled by config label_style.
+    """
+    style = _config.LABEL_STYLE
+    template = _config.CUSTOM_LABEL_TEMPLATE if style == "custom" else None
+
+    # Gather format variables
+    home = str(Path.home())
+    abs_cwd = cwd or ""
+    p = Path(abs_cwd) if abs_cwd else None
+    basename = p.name if p and p.name else ""
+    dirname = str(p.parent) if p and p.parent else ""
+    relhome = ""
+    relhome_parts = ()
+    if p:
         try:
             rel = p.relative_to(home)
-            parts = rel.parts
-            if not parts:
-                return "~"
-            # Use last 2 path components for context (e.g., "dev/project" or "project/src")
-            if len(parts) >= 2:
-                return str(Path(*parts[-2:]))
-            else:
-                return str(rel)
+            relhome = str(rel)
+            relhome_parts = rel.parts
         except ValueError:
-            # Not under home directory — use last 2 parts of absolute path
-            parts = p.parts
-            if len(parts) >= 2:
-                return str(Path(*parts[-2:]))
-            elif parts:
-                return parts[-1]
-            return "unknown"
-    else:
-        return _clean_name(folder_name) or "unknown"
+            # Not under home, use absolute path parts
+            relhome_parts = p.parts
+            relhome = abs_cwd
+    project = _clean_name(folder_name) if folder_name else ""
+    # Also provide full relhome with ~ prefix
+    relhome_tilde = "~" + (relhome if relhome and not relhome.startswith("~") else relhome.lstrip("~")) if (relhome or cwd) else ""
+
+    format_vars = {
+        "cwd": abs_cwd,
+        "basename": basename,
+        "dirname": dirname,
+        "relhome": relhome,
+        "relhome_tilde": relhome_tilde,
+        "project": project,
+        "pct": pct,
+    }
+
+    def apply_style(style: str) -> str:
+        if style == "basename":
+            return basename or project or "unknown"
+        elif style == "path2":
+            # Use relative path parts if available; fall back to absolute
+            if not relhome_parts:
+                return project or "unknown"
+            if len(relhome_parts) >= 2:
+                return str(Path(*relhome_parts[-2:]))
+            else:
+                # Single component: just show that
+                return relhome_parts[0] if relhome_parts else (project or "unknown")
+        elif style == "full":
+            return relhome_tilde or abs_cwd or (project or "unknown")
+        elif style == "custom" and template:
+            try:
+                return template.format(**format_vars).strip()
+            except Exception:
+                # Fallback to path2 on template error
+                return apply_style("path2")
+        else:
+            # Unknown style, fallback to path2
+            return apply_style("path2")
+
+    return apply_style(style)
 
 
 def _project_slug_from_cwd(cwd: str) -> str:
@@ -225,7 +266,8 @@ def get_sessions():
             # Don't let one bad file break the whole poll
             print(f"[token-tracker] skip {path}: {e}")
             continue
-        label = _make_label(cwd, Path(path).parent.name)
+        pct = (inp / CONTEXT_LIMIT * 100) if inp else 0.0
+        label = _make_label(cwd, Path(path).parent.name, pct)
         # Use (cwd, session_id) as dedup key to allow multiple sessions in same project
         session_key = (cwd, session_id)
         if session_key in seen:
@@ -237,7 +279,7 @@ def get_sessions():
             "output_tokens": out,
             "cwd": cwd,
             "session_id": session_id,
-            "pct": (inp / CONTEXT_LIMIT * 100) if inp else 0.0,
+            "pct": pct,
             "mtime": mtime,
             "active": (now - mtime) <= ACTIVE_WINDOW,
         })
@@ -782,12 +824,17 @@ class TokenTrackerApp(rumps.App):
             try:
                 with open(config_path, "w") as f:
                     f.write("# Token Tracker Configuration\n")
-                    f.write("# Edit this file to customize the app without changing code.\n\n")
+                    f.write("# Edit this file to customize the app without changing code.\n")
+                    f.write("# Changes require app restart to take effect.\n\n")
                     f.write("[display]\n")
                     f.write("poll_interval = 10\n")
                     f.write("context_limit = 262144\n")
                     f.write("warn_pct = 60\n")
-                    f.write("critical_pct = 85\n\n")
+                    f.write("critical_pct = 85\n")
+                    f.write("# Label style for sessions: basename, path2, full, or custom\n")
+                    f.write("label_style = path2\n")
+                    f.write("# Template for custom labels (e.g., \"{basename} [{pct:.0f}%]\"; see README)\n")
+                    f.write("custom_label_template = \"\"\n\n")
                     f.write("[storage]\n")
                     f.write("min_tokens_for_snapshot = 5000\n")
                     f.write("retention_days = 90\n\n")

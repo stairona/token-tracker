@@ -140,6 +140,11 @@ poll_interval = 10
 context_limit = 262144
 warn_pct = 60
 critical_pct = 85
+# Session label style: "basename", "path2", "full", or "custom"
+label_style = "path2"
+# Template for custom labels when label_style = "custom"
+# Available placeholders: {cwd}, {basename}, {dirname}, {relhome}, {relhome_tilde}, {project}, {pct}
+custom_label_template = "{relhome_tilde}"
 
 [storage]
 min_tokens_for_snapshot = 5000
@@ -158,6 +163,44 @@ tail_read_bytes = 524288
 ```
 
 Configuration is reloaded on app restart.
+
+### Session Label Formats
+
+The token tracker displays a label for each active Claude session. You can control the label format:
+
+- **`basename`**: Show only the current directory name (e.g., `project`)
+- **`path2`** (default): Show last two path components (e.g., `dev/project` or `work/api-server`)
+- **`full`**: Show full path with home abbreviated (e.g., `~/dev/project`)
+- **`custom`**: Use `custom_label_template` with placeholders:
+  - `{cwd}` — full absolute path
+  - `{basename}` — last directory name
+  - `{dirname}` — parent directory
+  - `{relhome}` — path relative to home (e.g., `dev/project`)
+  - `{relhome_tilde}` — same but prefixed with `~` (e.g., `~/dev/project`)
+  - `{project}` — Claude project folder name (cleaned)
+  - `{pct}` — current context usage percentage (float)
+
+**Example custom template**:
+```toml
+label_style = "custom"
+custom_label_template = "{basename} [{pct:.0f}%]"
+# Result: "project [42%]"
+```
+
+### Ghostty Integration
+
+If you use Ghostty terminal, you can configure `label_style` to match your `tab-title-format`. For example:
+
+- Ghostty: `tab-title-format = "{{.CWD}}"`
+  → Token tracker: `label_style = "full"`
+
+- Ghostty: `tab-title-format = "{{basename .CWD}}"`
+  → Token tracker: `label_style = "basename"`
+
+- Ghostty: `tab-title-format = "{{.Host}}/{{.CWD}}"`
+  → Token tracker: `label_style = "custom"` with `custom_label_template = "{relhome_tilde}"`
+
+This keeps your token tracker session labels consistent with what you see in Ghostty tabs.
 
 ## Multi-Session Behavior
 

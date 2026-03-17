@@ -16,6 +16,8 @@ DEFAULTS = {
         "context_limit": 262144,
         "warn_pct": 60,
         "critical_pct": 85,
+        "label_style": "path2",  # "basename", "path2", "full", "custom"
+        "custom_label_template": "",  # e.g., "{cwd}" or "{basename} - {pct}%"
     },
     "storage": {
         "min_tokens_for_snapshot": 5000,
@@ -115,6 +117,14 @@ class Config:
     @property
     def TAIL_READ_BYTES(self) -> int:
         return self.get("ui", "tail_read_bytes")
+
+    @property
+    def LABEL_STYLE(self) -> str:
+        return self.get("display", "label_style")
+
+    @property
+    def CUSTOM_LABEL_TEMPLATE(self) -> str:
+        return self.get("display", "custom_label_template")
 
     @property
     def config_path(self) -> Path:

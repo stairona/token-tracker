@@ -97,16 +97,39 @@ When your context usage is high (60%+), the menu shows a **Copy handoff prompt**
 
 After pasting the prompt in Claude, run `/compact` to free context.
 
-## Usage Graphs (Planned)
+## Usage Graphs
 
-Historical usage data is being collected to enable future visualizations:
+The tracker can display historical token usage in graphs. Data is automatically collected
+in the background (see *Historical Data* below).
 
-- Token usage trends over time (daily/weekly/monthly)
-- Project comparison charts
-- Context pressure heatmaps
-- Export to CSV for external analysis
+### Opening Graphs
 
-The database is stored at `~/.cache/token-tracker/usage.db`. Data collection is automatic and respects privacy (local only, no telemetry). Graph UI will appear under "📊 Usage Graphs..." in the menu when implemented.
+Click **📊 Usage Graphs...** in the menu to open a window with two tabs:
+
+- **Timeline**: Line chart of total token usage over time (last 30 days), with input tokens shaded.
+- **Project Totals**: Horizontal bar chart showing total tokens per project (last 30 days).
+
+The window is minimalistic and native-looking on macOS.
+
+### Requirements
+
+Graphs require `matplotlib` and `tkinter`:
+
+```bash
+pip install matplotlib
+```
+
+Tkinter is typically included with Python on macOS. If you see an error about missing `tkinter`, you may need to install it via Homebrew:
+
+```bash
+brew install python-tk
+```
+
+or use a Python distribution that includes Tkinter (e.g., python.org installer).
+
+### Data Retention
+
+Graphs use the same historical database (`~/.cache/token-tracker/usage.db`) with 90-day retention.
 
 ## Configuration
 
@@ -116,15 +139,6 @@ Edit [token_tracker.py](token_tracker.py) to adjust:
 - `POLL_INTERVAL`: refresh interval in seconds (default 10)
 - `ACTIVE_WINDOW`: how long a session counts as active (default 1800 seconds)
 
-### Historical Data
-
-The tracker now records usage snapshots to `~/.cache/token-tracker/usage.db` (SQLite).
-- Only significant usage (≥5000 tokens) is recorded
-- Data is retained for 90 days
-- Automatic cleanup runs daily
-- This data will power future usage graphs and analytics
-
-To disable historical recording, set `MIN_TOKENS_FOR_SNAPSHOT` to a very high number (e.g., `10**9`) in [storage.py](storage.py).
 
 ## Project Layout
 

@@ -347,6 +347,10 @@ class TokenTrackerApp(rumps.App):
         self._handoff_flash_until = 0.0
         self._storage = get_storage()
         self._last_cleanup = time.time()
+        # Graph window state
+        self._graph_window = None
+        self._graph_root = None
+        self._graph_update_timer = None
         threading.Thread(target=self._poll_loop, daemon=True).start()
         self._ui_timer = rumps.Timer(self._drain_updates, 1)
         self._ui_timer.start()
@@ -497,13 +501,130 @@ class TokenTrackerApp(rumps.App):
         self._handoff_flash_until = time.time() + 2.5
 
     def _on_show_graphs(self, _):
-        """Placeholder for future graph window."""
-        # TODO: Implement graph window with matplotlib or similar
-        # For now, just show an info message
-        rumps.alert(
-            title="Usage Graphs",
-            message="Graph feature is coming soon!\n\nHistorical data is being collected. The next phase will add visualization."
-        )
+        """Open a window with usage graphs (timeline and project totals)."""
+        try:
+            import tkinter as tk
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            import matplotlib
+            matplotlib.use('TkAgg')
+            import matplotlib.pyplot as plt
+            from datetime import datetime, timedelta
+            from tkinter import ttk
+        except ImportError as e:
+            rumps.alert(
+                title="Missing Dependencies",
+                message=("Graphs require matplotlib and Tkinter.\n\n"
+                         "Install with:\n"
+                         "  pip install matplotlib\n\n"
+                         "Tkinter is usually included with Python on macOS.\n\n"
+                         f"Error: {e}")
+            )
+            return
+
+        # If window already exists, bring to front
+        if self._graph_window is not None:
+            try:
+                self._graph_window.deiconify()
+                self._graph_window.lift()
+                self._graph_window.focus_force()
+            except Exception:
+                self._graph_window = None
+            return
+
+        # Create Tkinter root (hidden) and main window
+        root = tk.Tk()
+        root.withdraw()
+        self._graph_root = root
+
+        window = tk.Toplevel(root)
+        window.title("Token Usage Graphs")
+        window.geometry("900x650")
+        window.protocol("WM_DELETE_WINDOW", self._on_graph_window_close)
+
+        # Notebook (tabs)
+        notebook = ttk.Notebook(window)
+        notebook.pack(fill='both', expand=True, padx=10, pady=10)
+
+        # --- Timeline Tab ---
+        frame_tl = ttk.Frame(notebook)
+        notebook.add(frame_tl, text="Timeline")
+        fig_tl = plt.Figure(figsize=(8, 5), dpi=100)
+        ax_tl = fig_tl.add_subplot(111)
+        canvas_tl = FigureCanvasTkAgg(fig_tl, master=frame_tl)
+        canvas_tl.get_tk_widget().pack(fill='both', expand=True)
+
+        # --- Project Totals Tab ---
+        frame_pt = ttk.Frame(notebook)
+        notebook.add(frame_pt, text="Project Totals")
+        fig_pt = plt.Figure(figsize=(8, 5), dpi=100)
+        ax_pt = fig_pt.add_subplot(111)
+        canvas_pt = FigureCanvasTkAgg(fig_pt, master=frame_pt)
+        canvas_pt.get_tk_widget().pack(fill='both', expand=True)
+
+        # Load historical data (last 30 days)
+        try:
+            timeline_data = self._storage.get_usage_history(days=30)
+            project_data = self._storage.get_project_totals(days=30)
+        except Exception as e:
+            rumps.alert("Data Error", f"Failed to load historical data:\n{e}")
+            window.destroy()
+            return
+
+        # Plot Timeline
+        if timeline_data:
+            times = [datetime.fromtimestamp(d['timestamp']) for d in timeline_data]
+            total_vals = [d['total_tokens'] for d in timeline_data]
+            input_vals = [d['input_tokens'] for d in timeline_data]
+
+            ax_tl.plot(times, total_vals, label='Total', color='purple', linewidth=2)
+            ax_tl.fill_between(times, 0, input_vals, alpha=0.4, label='Input', color='blue')
+            ax_tl.set_title('Token Usage Over Last 30 Days')
+            ax_tl.set_ylabel('Tokens')
+            ax_tl.legend(loc='upper left')
+            fig_tl.autofmt_xdate()
+        else:
+            ax_tl.text(0.5, 0.5, 'No usage data yet.\nStart using Claude Code!',
+                       ha='center', va='center', fontsize=12)
+            ax_tl.set_axis_off()
+
+        # Plot Project Totals (horizontal bar)
+        if project_data:
+            names = [d['project_slug'] for d in project_data]
+            totals = [d['total_tokens'] for d in project_data]
+            ax_pt.barh(names, totals, color='teal')
+            ax_pt.set_title('Total Tokens by Project (Last 30 Days)')
+            ax_pt.set_xlabel('Tokens')
+            ax_pt.invert_yaxis()  # highest at top
+        else:
+            ax_pt.text(0.5, 0.5, 'No project data yet.', ha='center', va='center', fontsize=12)
+            ax_pt.set_axis_off()
+
+        # Render
+        canvas_tl.draw()
+        canvas_pt.draw()
+
+        # Keep references
+        self._graph_canvases = (canvas_tl, canvas_pt)
+        self._graph_window = window
+
+        # Start a rumps.Timer to call root.update() and keep Tkinter responsive
+        self._graph_update_timer = rumps.Timer(lambda _: root.update(), 0.05)
+        self._graph_update_timer.start()
+
+        # Bring window to front
+        window.lift()
+        window.focus_force()
+
+    def _on_graph_window_close(self):
+        """Clean up graph window resources."""
+        if self._graph_update_timer:
+            self._graph_update_timer.stop()
+            self._graph_update_timer = None
+        if self._graph_root:
+            self._graph_root.destroy()
+        self._graph_window = None
+        self._graph_root = None
+        self._graph_canvases = None
 
     def _on_refresh(self, _):
         self.title = "⏳"

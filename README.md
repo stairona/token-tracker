@@ -97,6 +97,17 @@ When your context usage is high (60%+), the menu shows a **Copy handoff prompt**
 
 After pasting the prompt in Claude, run `/compact` to free context.
 
+## Usage Graphs (Planned)
+
+Historical usage data is being collected to enable future visualizations:
+
+- Token usage trends over time (daily/weekly/monthly)
+- Project comparison charts
+- Context pressure heatmaps
+- Export to CSV for external analysis
+
+The database is stored at `~/.cache/token-tracker/usage.db`. Data collection is automatic and respects privacy (local only, no telemetry). Graph UI will appear under "📊 Usage Graphs..." in the menu when implemented.
+
 ## Configuration
 
 Edit [token_tracker.py](token_tracker.py) to adjust:
@@ -104,6 +115,16 @@ Edit [token_tracker.py](token_tracker.py) to adjust:
 - `CONTEXT_LIMIT`: model context size (default 262144)
 - `POLL_INTERVAL`: refresh interval in seconds (default 10)
 - `ACTIVE_WINDOW`: how long a session counts as active (default 1800 seconds)
+
+### Historical Data
+
+The tracker now records usage snapshots to `~/.cache/token-tracker/usage.db` (SQLite).
+- Only significant usage (≥5000 tokens) is recorded
+- Data is retained for 90 days
+- Automatic cleanup runs daily
+- This data will power future usage graphs and analytics
+
+To disable historical recording, set `MIN_TOKENS_FOR_SNAPSHOT` to a very high number (e.g., `10**9`) in [storage.py](storage.py).
 
 ## Project Layout
 

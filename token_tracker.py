@@ -19,6 +19,7 @@ import threading
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from storage import get_storage
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -301,6 +302,7 @@ class TokenTrackerApp(rumps.App):
         self.item_project  = rumps.MenuItem("Project: —")
         self.item_tip      = rumps.MenuItem("💡 Run /compact to free context")
         self.item_handoff_target = rumps.MenuItem("Handoff target: —")
+        self.item_graphs = rumps.MenuItem("📊 Usage Graphs...", callback=self._on_show_graphs)
         self.item_sessions_header = rumps.MenuItem("Active sessions: —")
         self._session_items = [
             rumps.MenuItem(" ", callback=self._make_session_select_handler(i))
@@ -318,6 +320,7 @@ class TokenTrackerApp(rumps.App):
             None,  # separator
             self.item_handoff_target,
             self.item_handoff,
+            self.item_graphs,
             None,
             self.item_sessions_header,
             *self._session_items,
@@ -337,6 +340,8 @@ class TokenTrackerApp(rumps.App):
         self._state_lock = threading.Lock()
         self._refresh_requested = threading.Event()
         self._handoff_flash_until = 0.0
+        self._storage = get_storage()
+        self._last_cleanup = time.time()
         threading.Thread(target=self._poll_loop, daemon=True).start()
         self._ui_timer = rumps.Timer(self._drain_updates, 1)
         self._ui_timer.start()
@@ -347,6 +352,19 @@ class TokenTrackerApp(rumps.App):
             try:
                 sessions = get_sessions()
                 now_str = datetime.now().strftime("%H:%M:%S")
+
+                # Record historical snapshot (with sampling)
+                try:
+                    self._storage.record_snapshot(sessions)
+                    # Periodic cleanup: once per day
+                    if time.time() - self._last_cleanup > 86400:
+                        deleted = self._storage.cleanup_old_data()
+                        if deleted:
+                            print(f"[token-tracker] cleanup: removed {deleted} old records")
+                        self._last_cleanup = time.time()
+                except Exception as e:
+                    print(f"[token-tracker] storage error: {e}")
+
                 with self._state_lock:
                     self._latest_state = {"sessions": sessions, "now_str": now_str, "error": None}
             except Exception as e:
@@ -472,6 +490,15 @@ class TokenTrackerApp(rumps.App):
         success = copy_to_clipboard(prompt)
         self.item_handoff.title = "✅ Copied! Paste into Claude" if success else "❌ Copy failed — check terminal"
         self._handoff_flash_until = time.time() + 2.5
+
+    def _on_show_graphs(self, _):
+        """Placeholder for future graph window."""
+        # TODO: Implement graph window with matplotlib or similar
+        # For now, just show an info message
+        rumps.alert(
+            title="Usage Graphs",
+            message="Graph feature is coming soon!\n\nHistorical data is being collected. The next phase will add visualization."
+        )
 
     def _on_refresh(self, _):
         self.title = "⏳"

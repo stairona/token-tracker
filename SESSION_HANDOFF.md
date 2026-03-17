@@ -4,6 +4,85 @@
 
 ---
 
+## 📅 Session: 2026-03-16 — Phases 3/5/6/7 (Config, Notifications, Graph UX, Packaging)
+
+**Branch:** main
+**Remote:** https://github.com/stairona/token-tracker.git
+
+### Changes Completed
+
+#### Phase 3.1 — Time Range Selector
+- Graph window now includes a dropdown to select time range (7, 30, 90 days)
+- Selection triggers immediate reload and redraw of both Timeline and Project Totals
+- Default days respect config `graphs.default_days`
+
+#### Phase 3.2 — CSV Export
+- Added "Export CSV..." button below the time range control
+- Exports current timeline data (respecting selected days) with full ISO timestamps
+- Columns: `timestamp,project_slug,input_tokens,output_tokens,total_tokens,context_pct,cwd`
+- Uses macOS save dialog; shows confirmation/error alerts
+
+#### Phase 5 — Desktop Notifications
+- Added `rumps.notification` calls when context crosses thresholds
+- State tracking (`_notification_state`) prevents spam
+- Notifications for:
+  - Entry into warning zone (>= WARN_PCT)
+  - Entry into critical zone (>= CRITICAL_PCT)
+  - Recovery back to normal (optional)
+- Configurable via `graphs.enable_notifications` (default True)
+
+#### Phase 6.1 — pyproject.toml
+- Created `pyproject.toml` following PEP 621
+- Defines `token-tracker` console script entry point (`token_tracker:main`)
+- Dependencies: `rumps>=0.2.0`
+- Optional dependency `graphs` extra for `matplotlib`
+- Ready for `pip install .` and PyPI publishing
+
+#### Phase 7 — Configuration File
+- Created `config.py` module to load `~/.config/token-tracker/config.toml`
+- Supports sections: `[display]`, `[storage]`, `[graphs]`, `[ui]`
+- All hard-coded constants moved to config with safe fallbacks
+- Added **Preferences...** menu item to open or create config in default editor
+- `storage.py` updated to use config values
+
+#### Refactoring
+- Wrapped `TokenTrackerApp().run()` in `main()` for entry point
+- Split `_on_show_graphs` to delegate drawing to `_draw_graphs()` (reusability)
+- Centralized config loading at module start
+
+### Commands Executed
+
+```bash
+# Modified files
+token_tracker.py
+storage.py
+config.py (new)
+pyproject.toml (new)
+README.md (extensive update)
+
+# Git
+git commit -m "feat: add config system, notifications, graph enhancements"
+git push origin main
+```
+
+### Validation
+
+- Syntax: `python -m py_compile` passes
+- Logic: notification state transitioning appears sound
+- UI: graph controls (combobox, export) integrated without layout issues
+- Config: default config written on first Preferences click
+- Backward compatibility: config file optional; app runs with defaults
+
+### Moved or Renamed Files
+
+- **None** — All changes were in-place additions or edits.
+
+### Deletion Candidates
+
+- **None** — No files deleted.
+
+---
+
 ## 📅 Session: 2026-03-16 — Phases 1 & 2 Complete (Storage + Graphs + Multi-Session Fix)
 
 **Branch:** main

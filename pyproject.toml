@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "token-tracker"
+version = "1.0.0"
+description = "Real-time token usage for Claude Code in your macOS menu bar"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Nicolas Aguirre"}
+]
+keywords = ["claude", "token", "tracker", "menu-bar", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "rumps>=0.2.0",
+]
+
+[project.optional-dependencies]
+graphs = [
+    "matplotlib",
+]
+
+[project.scripts]
+token-tracker = "token_tracker:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"

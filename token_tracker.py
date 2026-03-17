@@ -20,21 +20,26 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from storage import get_storage
+from config import get_config
+import csv
 
 # ── Config ────────────────────────────────────────────────────────────────────
+_config = get_config()
+
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 HANDOFF_ROOT_ENV = os.getenv("HANDOFF_ROOT")
 HANDOFF_ROOT = Path(HANDOFF_ROOT_ENV) if HANDOFF_ROOT_ENV else None
-POLL_INTERVAL  = 10       # seconds between polls
-CONTEXT_LIMIT  = 262144   # stepfun/step-3.5-flash:free
-ACTIVE_WINDOW  = 1800     # seconds — session shown if modified within 30 min
-WARN_PCT       = 60       # yellow threshold
-CRITICAL_PCT   = 85       # red threshold
-TAIL_READ_BYTES = 512 * 1024  # read tail first for large logs
-MAX_SESSION_ITEMS = 5         # max sessions shown in the picker
-MAX_FILES_TO_SCAN = 50        # maximum session files to examine per poll (prevents hanging on huge file systems)
-POLL_BUDGET_SEC = 8           # maximum seconds to spend in a single poll cycle (timeout safeguard)
-FILE_OP_TIMEOUT = 5           # seconds timeout for file read operations
+POLL_INTERVAL = _config.POLL_INTERVAL
+CONTEXT_LIMIT = _config.CONTEXT_LIMIT
+ACTIVE_WINDOW = 1800     # seconds — session shown if modified within 30 min (hard-coded for now)
+WARN_PCT = _config.WARN_PCT
+CRITICAL_PCT = _config.CRITICAL_PCT
+ENABLE_NOTIFICATIONS = _config.ENABLE_NOTIFICATIONS
+TAIL_READ_BYTES = _config.TAIL_READ_BYTES
+MAX_SESSION_ITEMS = _config.MAX_SESSION_ITEMS
+MAX_FILES_TO_SCAN = _config.MAX_FILES_TO_SCAN
+POLL_BUDGET_SEC = _config.POLL_BUDGET_SEC
+FILE_OP_TIMEOUT = _config.FILE_OP_TIMEOUT
 
 # Cache token parsing by file signature (mtime, size)
 _TOKEN_CACHE = {}
@@ -316,6 +321,7 @@ class TokenTrackerApp(rumps.App):
         self.item_handoff  = rumps.MenuItem("📋 Copy handoff prompt", callback=self._on_handoff)
         self.item_updated  = rumps.MenuItem("Updated: —")
         self.item_refresh  = rumps.MenuItem("Refresh now", callback=self._on_refresh)
+        self.item_prefs    = rumps.MenuItem("Preferences...", callback=self._on_preferences)
         self.item_quit     = rumps.MenuItem("Quit", callback=rumps.quit_application)
 
         self.menu = [
@@ -333,6 +339,7 @@ class TokenTrackerApp(rumps.App):
             self.item_tip,
             self.item_updated,
             self.item_refresh,
+            self.item_prefs,
             None,
             self.item_quit,
         ]
@@ -351,6 +358,8 @@ class TokenTrackerApp(rumps.App):
         self._graph_window = None
         self._graph_root = None
         self._graph_update_timer = None
+        # Notification state tracking
+        self._notification_state = None  # None, 'warn', 'critical'
         threading.Thread(target=self._poll_loop, daemon=True).start()
         self._ui_timer = rumps.Timer(self._drain_updates, 1)
         self._ui_timer.start()
@@ -402,6 +411,45 @@ class TokenTrackerApp(rumps.App):
             self._handoff_flash_until = 0.0
             self.item_handoff.title = "📋 Copy handoff prompt"
 
+    def _maybe_send_notification(self, pct, label):
+        """Send desktop notification if threshold crossing is new."""
+        if not ENABLE_NOTIFICATIONS:
+            return
+
+        # Determine current level
+        if pct >= CRITICAL_PCT:
+            level = 'critical'
+        elif pct >= WARN_PCT:
+            level = 'warn'
+        else:
+            level = None
+
+        # Only notify if we're entering a new threshold zone
+        if level != self._notification_state:
+            self._notification_state = level
+            if level == 'critical':
+                rumps.notification(
+                    title="Token Tracker — CRITICAL",
+                    subtitle=f"{label}",
+                    message=f"Context at {pct:.0f}% — run /compact now!",
+                    sound=True
+                )
+            elif level == 'warn':
+                rumps.notification(
+                    title="Token Tracker — High Usage",
+                    subtitle=f"{label}",
+                    message=f"Context at {pct:.0f}% — consider /compact",
+                    sound=False
+                )
+            elif level is None and self._notification_state in ('warn', 'critical'):
+                # Recovery notification (optional - could be disabled)
+                rumps.notification(
+                    title="Token Tracker — Normal",
+                    subtitle=f"{label}",
+                    message=f"Context back to {pct:.0f}%",
+                    sound=False
+                )
+
     def _apply_state(self, sessions, now_str, error=None):
         if error:
             self.title = "❌"
@@ -435,6 +483,9 @@ class TokenTrackerApp(rumps.App):
         out   = primary["output_tokens"]
         label = primary["label"]
         bar   = pct_bar(pct)
+
+        # Check for notification-worthy threshold crossings
+        self._maybe_send_notification(pct, label)
 
         # Menu bar — show usage/total clearly
         self.title = f"{icon(pct)} {format_tokens(inp)}/{format_limit(CONTEXT_LIMIT)}"
@@ -510,6 +561,8 @@ class TokenTrackerApp(rumps.App):
             import matplotlib.pyplot as plt
             from datetime import datetime, timedelta
             from tkinter import ttk
+            from tkinter import filedialog
+            import csv
         except ImportError as e:
             rumps.alert(
                 title="Missing Dependencies",
@@ -538,10 +591,60 @@ class TokenTrackerApp(rumps.App):
 
         window = tk.Toplevel(root)
         window.title("Token Usage Graphs")
-        window.geometry("900x650")
+        window.geometry("920x720")
         window.protocol("WM_DELETE_WINDOW", self._on_graph_window_close)
 
-        # Notebook (tabs)
+        # --- Control Frame (time range + export) ---
+        control_frame = ttk.Frame(window)
+        control_frame.pack(fill='x', padx=10, pady=5)
+
+        ttk.Label(control_frame, text="Time range:").pack(side='left', padx=(0, 5))
+
+        days_var = tk.IntVar(value=30)
+        days_combo = ttk.Combobox(control_frame, textvariable=days_var, values=[7, 30, 90], width=10, state='readonly')
+        days_combo.pack(side='left', padx=5)
+
+        ttk.Label(control_frame, text="days").pack(side='left', padx=(0, 10))
+
+        def export_csv():
+            try:
+                days_export = days_var.get()
+                history = self._storage.get_usage_history(days=days_export)
+                if not history:
+                    rumps.alert("No Data", f"No usage data to export for the last {days_export} days.")
+                    return
+                file_path = filedialog.asksaveasfilename(
+                    parent=window,
+                    defaultextension=".csv",
+                    filetypes=[("CSV files", "*.csv"), ("All files", "*")],
+                    initialfile=f"token-usage-{datetime.now().strftime('%Y-%m-%d')}.csv"
+                )
+                if not file_path:
+                    return
+                with open(file_path, 'w', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=['timestamp', 'project_slug', 'input_tokens', 'output_tokens', 'total_tokens', 'context_pct', 'cwd'])
+                    writer.writeheader()
+                    for row in history:
+                        row_copy = dict(row)
+                        row_copy['timestamp'] = datetime.fromtimestamp(row_copy['timestamp']).isoformat()
+                        writer.writerow(row_copy)
+                rumps.alert("Export Complete", f"Exported {len(history)} records to:\n{file_path}")
+            except Exception as e:
+                rumps.alert("Export Failed", f"Error exporting CSV:\n{e}")
+
+        export_btn = ttk.Button(control_frame, text="Export CSV...", command=export_csv)
+        export_btn.pack(side='left', padx=20)
+
+        def reload_graphs():
+            try:
+                days = days_var.get()
+                self._draw_graphs(window, days, fig_tl, ax_tl, canvas_tl, fig_pt, ax_pt, canvas_pt)
+            except Exception as e:
+                print(f"[token-tracker] graph reload error: {e}")
+
+        days_combo.bind('<<ComboboxSelected>>', lambda e: reload_graphs())
+
+        # --- Notebook (tabs) ---
         notebook = ttk.Notebook(window)
         notebook.pack(fill='both', expand=True, padx=10, pady=10)
 
@@ -561,47 +664,9 @@ class TokenTrackerApp(rumps.App):
         canvas_pt = FigureCanvasTkAgg(fig_pt, master=frame_pt)
         canvas_pt.get_tk_widget().pack(fill='both', expand=True)
 
-        # Load historical data (last 30 days)
-        try:
-            timeline_data = self._storage.get_usage_history(days=30)
-            project_data = self._storage.get_project_totals(days=30)
-        except Exception as e:
-            rumps.alert("Data Error", f"Failed to load historical data:\n{e}")
-            window.destroy()
-            return
-
-        # Plot Timeline
-        if timeline_data:
-            times = [datetime.fromtimestamp(d['timestamp']) for d in timeline_data]
-            total_vals = [d['total_tokens'] for d in timeline_data]
-            input_vals = [d['input_tokens'] for d in timeline_data]
-
-            ax_tl.plot(times, total_vals, label='Total', color='purple', linewidth=2)
-            ax_tl.fill_between(times, 0, input_vals, alpha=0.4, label='Input', color='blue')
-            ax_tl.set_title('Token Usage Over Last 30 Days')
-            ax_tl.set_ylabel('Tokens')
-            ax_tl.legend(loc='upper left')
-            fig_tl.autofmt_xdate()
-        else:
-            ax_tl.text(0.5, 0.5, 'No usage data yet.\nStart using Claude Code!',
-                       ha='center', va='center', fontsize=12)
-            ax_tl.set_axis_off()
-
-        # Plot Project Totals (horizontal bar)
-        if project_data:
-            names = [d['project_slug'] for d in project_data]
-            totals = [d['total_tokens'] for d in project_data]
-            ax_pt.barh(names, totals, color='teal')
-            ax_pt.set_title('Total Tokens by Project (Last 30 Days)')
-            ax_pt.set_xlabel('Tokens')
-            ax_pt.invert_yaxis()  # highest at top
-        else:
-            ax_pt.text(0.5, 0.5, 'No project data yet.', ha='center', va='center', fontsize=12)
-            ax_pt.set_axis_off()
-
-        # Render
-        canvas_tl.draw()
-        canvas_pt.draw()
+        # Initial draw (use config default)
+        default_days = _config.GRAPHS_DEFAULT_DAYS
+        self._draw_graphs(window, default_days, fig_tl, ax_tl, canvas_tl, fig_pt, ax_pt, canvas_pt)
 
         # Keep references
         self._graph_canvases = (canvas_tl, canvas_pt)
@@ -614,6 +679,55 @@ class TokenTrackerApp(rumps.App):
         # Bring window to front
         window.lift()
         window.focus_force()
+
+    def _draw_graphs(self, parent_window, days, fig_tl, ax_tl, canvas_tl, fig_pt, ax_pt, canvas_pt):
+        """Draw the graphs with data for the specified number of days."""
+        # Load historical data
+        try:
+            timeline_data = self._storage.get_usage_history(days=days)
+            project_data = self._storage.get_project_totals(days=days)
+        except Exception as e:
+            rumps.alert("Data Error", f"Failed to load historical data:\n{e}")
+            if parent_window and parent_window.winfo_exists():
+                parent_window.destroy()
+            return
+
+        # Clear previous plots
+        ax_tl.clear()
+        ax_pt.clear()
+
+        # Plot Timeline
+        if timeline_data:
+            times = [datetime.fromtimestamp(d['timestamp']) for d in timeline_data]
+            total_vals = [d['total_tokens'] for d in timeline_data]
+            input_vals = [d['input_tokens'] for d in timeline_data]
+
+            ax_tl.plot(times, total_vals, label='Total', color='purple', linewidth=2)
+            ax_tl.fill_between(times, 0, input_vals, alpha=0.4, label='Input', color='blue')
+            ax_tl.set_title(f'Token Usage Over Last {days} Days')
+            ax_tl.set_ylabel('Tokens')
+            ax_tl.legend(loc='upper left')
+            fig_tl.autofmt_xdate()
+        else:
+            ax_tl.text(0.5, 0.5, f'No usage data yet for the last {days} days.\nStart using Claude Code!',
+                       ha='center', va='center', fontsize=12)
+            ax_tl.set_axis_off()
+
+        # Plot Project Totals (horizontal bar)
+        if project_data:
+            names = [d['project_slug'] for d in project_data]
+            totals = [d['total_tokens'] for d in project_data]
+            ax_pt.barh(names, totals, color='teal')
+            ax_pt.set_title(f'Total Tokens by Project (Last {days} Days)')
+            ax_pt.set_xlabel('Tokens')
+            ax_pt.invert_yaxis()  # highest at top
+        else:
+            ax_pt.text(0.5, 0.5, 'No project data yet.', ha='center', va='center', fontsize=12)
+            ax_pt.set_axis_off()
+
+        # Render
+        canvas_tl.draw()
+        canvas_pt.draw()
 
     def _on_graph_window_close(self):
         """Clean up graph window resources."""
@@ -629,6 +743,42 @@ class TokenTrackerApp(rumps.App):
     def _on_refresh(self, _):
         self.title = "⏳"
         self._refresh_requested.set()
+
+    def _on_preferences(self, _):
+        """Open the config file in the default editor (using 'open' on macOS)."""
+        config_path = _config.config_path
+        if not config_path.exists():
+            # Create directory if missing
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write default config
+            try:
+                with open(config_path, "w") as f:
+                    f.write("# Token Tracker Configuration\n")
+                    f.write("# Edit this file to customize the app without changing code.\n\n")
+                    f.write("[display]\n")
+                    f.write("poll_interval = 10\n")
+                    f.write("context_limit = 262144\n")
+                    f.write("warn_pct = 60\n")
+                    f.write("critical_pct = 85\n\n")
+                    f.write("[storage]\n")
+                    f.write("min_tokens_for_snapshot = 5000\n")
+                    f.write("retention_days = 90\n\n")
+                    f.write("[graphs]\n")
+                    f.write("default_days = 30\n")
+                    f.write("enable_notifications = true\n\n")
+                    f.write("[ui]\n")
+                    f.write("max_session_items = 5\n")
+                    f.write("max_files_to_scan = 50\n")
+                    f.write("poll_budget_sec = 8\n")
+                    f.write("file_op_timeout = 5\n")
+                    f.write("tail_read_bytes = 524288\n")
+            except Exception as e:
+                rumps.alert("Config Error", f"Failed to create config file:\n{e}")
+                return
+        try:
+            subprocess.run(["open", str(config_path)], check=True)
+        except Exception as e:
+            rumps.alert("Failed", f"Could not open config file:\n{e}")
 
     def _make_session_select_handler(self, index: int):
         def _handler(_):
@@ -652,5 +802,8 @@ def _short_cwd(cwd: str) -> str:
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
+def main():
     TokenTrackerApp().run()
+
+if __name__ == "__main__":
+    main()

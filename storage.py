@@ -11,15 +11,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from threading import Lock
+from config import get_config
 
 # ── Config ────────────────────────────────────────────────────────────────────
+_config = get_config()
+
 DB_PATH = Path.home() / ".cache" / "token-tracker" / "usage.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Sampling thresholds
-MIN_TOKENS_FOR_SNAPSHOT = 5000          # don't record tiny usage
+MIN_TOKENS_FOR_SNAPSHOT = _config.MIN_TOKENS_FOR_SNAPSHOT
 MAX_SNAPSHOTS_PER_DAY = 1440            # 1 per minute max (24h * 60)
-RETENTION_DAYS = 90                     # keep 90 days of data
+RETENTION_DAYS = _config.RETENTION_DAYS
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 SCHEMA = """

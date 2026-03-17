@@ -67,6 +67,33 @@ def _clean_name(folder: str) -> str:
     return cleaned or "unknown"
 
 
+def _make_label(cwd: str, folder_name: str) -> str:
+    """Create a clear, distinguishable label for a session using directory structure."""
+    if cwd:
+        p = Path(cwd)
+        home = str(Path.home())
+        try:
+            rel = p.relative_to(home)
+            parts = rel.parts
+            if not parts:
+                return "~"
+            # Use last 2 path components for context (e.g., "dev/project" or "project/src")
+            if len(parts) >= 2:
+                return str(Path(*parts[-2:]))
+            else:
+                return str(rel)
+        except ValueError:
+            # Not under home directory — use last 2 parts of absolute path
+            parts = p.parts
+            if len(parts) >= 2:
+                return str(Path(*parts[-2:]))
+            elif parts:
+                return parts[-1]
+            return "unknown"
+    else:
+        return _clean_name(folder_name) or "unknown"
+
+
 def _project_slug_from_cwd(cwd: str) -> str:
     """Derive a project slug from cwd, preferring the segment after light-projects."""
     if not cwd:
@@ -198,7 +225,7 @@ def get_sessions():
             # Don't let one bad file break the whole poll
             print(f"[token-tracker] skip {path}: {e}")
             continue
-        label = Path(cwd).name if cwd else _clean_name(Path(path).parent.name)
+        label = _make_label(cwd, Path(path).parent.name)
         # Use (cwd, session_id) as dedup key to allow multiple sessions in same project
         session_key = (cwd, session_id)
         if session_key in seen:
@@ -600,7 +627,8 @@ class TokenTrackerApp(rumps.App):
 
         ttk.Label(control_frame, text="Time range:").pack(side='left', padx=(0, 5))
 
-        days_var = tk.IntVar(value=30)
+        default_days = _config.GRAPHS_DEFAULT_DAYS
+        days_var = tk.IntVar(value=default_days if default_days in (7, 30, 90) else 30)
         days_combo = ttk.Combobox(control_frame, textvariable=days_var, values=[7, 30, 90], width=10, state='readonly')
         days_combo.pack(side='left', padx=5)
 

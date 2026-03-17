@@ -77,9 +77,10 @@ def _project_slug_from_cwd(cwd: str) -> str:
 
 
 def _read_tokens(path: str):
-    """Read (input_tokens, output_tokens, cwd) from most recent non-zero usage entry."""
+    """Read (input_tokens, output_tokens, cwd, session_id) from most recent non-zero usage entry."""
     inp = out = 0
     cwd = ""
+    session_id = ""
     sig = (0, 0)
     try:
         stat = os.stat(path)
@@ -88,19 +89,21 @@ def _read_tokens(path: str):
         # Skip extremely large files to avoid memory/time issues (unlikely but safe)
         if stat.st_size > 100_000_000:  # 100 MB
             print(f"[token-tracker] skip large file: {path} ({stat.st_size} bytes)")
-            return 0, 0, ""
+            return 0, 0, "", ""
 
         cached = _TOKEN_CACHE.get(path)
         if cached and cached[0] == sig:
-            return cached[1], cached[2], cached[3]
+            return cached[1], cached[2], cached[3], cached[4]
 
         def parse_lines(lines):
-            nonlocal inp, out, cwd
+            nonlocal inp, out, cwd, session_id
             for line in reversed(lines):
                 try:
                     e = json.loads(line.strip())
                     if not cwd:
                         cwd = e.get("cwd", "")
+                    if not session_id:
+                        session_id = e.get("sessionId", "")
                     msg = e.get("message", {})
                     if not isinstance(msg, dict):
                         continue
@@ -141,8 +144,8 @@ def _read_tokens(path: str):
         print(f"[token-tracker] error reading {path}: {e}")
     finally:
         # Always update cache with what we found (could be zeros)
-        _TOKEN_CACHE[path] = (sig, inp, out, cwd)
-    return inp, out, cwd
+        _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
+    return inp, out, cwd, session_id
 
 
 def get_sessions():
@@ -185,13 +188,14 @@ def get_sessions():
         if path != newest and (now - mtime) > ACTIVE_WINDOW:
             continue
         try:
-            inp, out, cwd = _read_tokens(path)
+            inp, out, cwd, session_id = _read_tokens(path)
         except Exception as e:
             # Don't let one bad file break the whole poll
             print(f"[token-tracker] skip {path}: {e}")
             continue
         label = Path(cwd).name if cwd else _clean_name(Path(path).parent.name)
-        session_key = cwd or str(Path(path).parent)
+        # Use (cwd, session_id) as dedup key to allow multiple sessions in same project
+        session_key = (cwd, session_id)
         if session_key in seen:
             continue
         seen.add(session_key)
@@ -200,6 +204,7 @@ def get_sessions():
             "input_tokens": inp,
             "output_tokens": out,
             "cwd": cwd,
+            "session_id": session_id,
             "pct": (inp / CONTEXT_LIMIT * 100) if inp else 0.0,
             "mtime": mtime,
             "active": (now - mtime) <= ACTIVE_WINDOW,
@@ -443,12 +448,12 @@ class TokenTrackerApp(rumps.App):
         target = None
         if self._handoff_target_key:
             for s in sessions:
-                if (s["cwd"] or s["label"]) == self._handoff_target_key:
+                if s.get("session_id") == self._handoff_target_key:
                     target = s
                     break
         if not target:
             target = sessions[0]
-            self._handoff_target_key = target["cwd"] or target["label"]
+            self._handoff_target_key = target.get("session_id") or target["cwd"] or target["label"]
         self._handoff_target = target
         self.item_handoff_target.title = f"Handoff target: {target['label']} ({_short_cwd(target['cwd'])})"
 
@@ -458,7 +463,7 @@ class TokenTrackerApp(rumps.App):
         for i, item in enumerate(self._session_items):
             if i < len(sessions):
                 s = sessions[i]
-                is_selected = (s["cwd"] or s["label"]) == self._handoff_target_key
+                is_selected = s.get("session_id") == self._handoff_target_key
                 prefix = "✓ " if is_selected else "  "
                 item.title = f"{prefix}{s['label']} ({_short_cwd(s['cwd'])})"
                 item.hidden = False
@@ -509,7 +514,8 @@ class TokenTrackerApp(rumps.App):
             if index >= len(self._latest_sessions):
                 return
             session = self._latest_sessions[index]
-            self._handoff_target_key = session["cwd"] or session["label"]
+            # Use session_id to uniquely identify sessions, even if cwd is same
+            self._handoff_target_key = session.get("session_id") or session["cwd"] or session["label"]
         return _handler
 
 

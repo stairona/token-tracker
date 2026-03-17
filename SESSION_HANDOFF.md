@@ -31,6 +31,13 @@
   - Recovery back to normal (optional)
 - Configurable via `graphs.enable_notifications` (default True)
 
+#### Phase 8 — Improved Session Labeling (Ghostty Multi-Session)
+- Replaced simple basename labeling with path-based labels
+- `_make_label()` uses the last 2 path components of cwd (e.g., `dev/project` vs `work/project`)
+- Home directory abbreviated as `~`
+- Distinguishes sessions across different workspace directories
+- Works seamlessly with Ghostty's multi-tab Claude sessions
+
 #### Phase 6.1 — pyproject.toml
 - Created `pyproject.toml` following PEP 621
 - Defines `token-tracker` console script entry point (`token_tracker:main`)

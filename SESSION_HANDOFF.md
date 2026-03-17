@@ -4,74 +4,88 @@
 
 ---
 
-## 📅 Session: 2026-03-16 — Historical Usage Storage (Phase 1)
+## 📅 Session: 2026-03-16 — Phases 1 & 2 Complete (Storage + Graphs + Multi-Session Fix)
 
 **Branch:** main
 **Remote:** https://github.com/stairona/token-tracker.git
 
 ### Changes Completed
 
-- **Added storage.py**: SQLite backend for historical token usage
-  - Database at `~/.cache/token-tracker/usage.db`
-  - Schema: timestamp, project_slug, input/output tokens, total, context %, cwd
-  - Sampling logic: only record if total tokens >= 5000
-  - Throttling: max 1 snapshot/minute per project; skip if <15 min since last
+#### Phase 1 — Historical Storage
+- **storage.py**: SQLite backend (`~/.cache/token-tracker/usage.db`)
+  - Schema: timestamp, project_slug, input/output/total tokens, context_pct, cwd
+  - Sampling: only record if total tokens >= 5000
+  - Throttling: max 1 snapshot/min per project; skip if <15 min since last
   - Retention: 90 days with daily cleanup
 
-- **Modified token_tracker.py**:
-  - Imported `get_storage` and initialized `_storage` in app
-  - `_poll_loop` now calls `self._storage.record_snapshot(sessions)`
-  - Added daily cleanup: `cleanup_old_data()`
-  - Added placeholder menu item "📊 Usage Graphs..." with `_on_show_graphs` callback
-  - New configurable constants: `MIN_TOKENS_FOR_SNAPSHOT`, `RETENTION_DAYS` (in storage.py)
+- **token_tracker.py**: integrated storage
+  - `self._storage = get_storage()` in init
+  - `record_snapshot(sessions)` in `_poll_loop`
+  - Daily cleanup: `cleanup_old_data()`
 
-- **Updated README.md**:
-  - Added "Historical Data" section explaining storage location and retention
-  - Added "Usage Graphs (Planned)" section describing future visualization features
-  - Documented automatic sampling and privacy (local only)
+#### Phase 2 — Graphs UI & Multi-Session Fix
+- **Graph window** (Tkinter + matplotlib)
+  - Menu item "📊 Usage Graphs..." opens a window with two tabs:
+    * *Timeline*: line chart of total tokens (purple) over last 30 days, input shaded blue
+    * *Project Totals*: horizontal bar chart (teal) of tokens per project
+  - Bring-to-front behavior if already open
+  - Graceful error alert if dependencies missing
+- **Multi-session support** (Ghostty fix)
+  - Now distinguishes separate Claude sessions by `sessionId` (UUID)
+  - Deduplication key: `(cwd, session_id)` instead of just `cwd`
+  - Handoff target selection uses `session_id` for precision
+  - Session picker shows distinct entries even when cwd is same
+- **README.md** updated:
+  - Consolidated "Usage Graphs" section (no longer planned)
+  - Documented graph requirements (`pip install matplotlib`, Tkinter)
+  - Removed redundant "Historical Data" subsection
 
 ### Commands Executed
 
 ```bash
-# Syntax verification
+# Syntax checks
 python -m py_compile token_tracker.py
 python -m py_compile storage.py
 
-# Storage test
-python -c "from storage import SQLiteStorage; ..."  # Verified insert/retrieve/cleanup
+# Storage unit test
+python -c "from storage import SQLiteStorage; ..."  # Verified CRUD
 
-# Git operations
-git add -A
+# Git commits
 git commit -m "feat: add historical usage storage (Phase 1)"
+git commit -m "fix: distinguish concurrent sessions using sessionId"
+git commit -m "feat: add usage graphs UI with Tkinter/matplotlib (Phase 2)"
+
+# Push all
 git push origin main
 ```
 
 ### Validation
 
-- Storage module tested independently: creates DB, records snapshot, retrieves history
-- No syntax errors in token_tracker.py (compilation succeeded)
-- App continues to work: storage errors are caught and logged, don't break polling
-- Menu structure updated without crashes (static items approach preserved)
+- Storage: independent test passed (create, insert, query, cleanup)
+- Syntax: both modules compile cleanly
+- UI: graph window opens (requires matplotlib/tkinter); no crashes if missing
+- Multi-session: two Claude windows in same project appear as separate menu entries
+- Session picker selects correct instance via session_id
+- Error handling: storage errors logged, don't break polling; graph import errors show alert
+- Menu structure stable (static items pattern)
 
 ### Open Items / Next Steps
 
-- **Phase 2: Graph UI** — Need to select plotting library:
-  - matplotlib: heavy but standard; can embed in Tkinter window
-  - plotly: interactive, but needs browser or web view
-  - rumps limitations: rumps uses PyObjC; complex custom windows may require AppKit
-
-- Graph features planned:
-  - Line chart: usage over time (24h, 7d, 30d views)
-  - Bar chart: total tokens per project
-  - Pie chart: input vs output ratio
-  - Hover tooltips, time range selector, project filter
-  - CSV export
-
-- May need to add dependency (matplotlib) and handle import gracefully with error message if missing.
+- **Phase 3 possibilities**:
+  - Time range selector in graph window (7d, 30d, 90d)
+  - CSV export from graphs
+  - Context pressure heatmap (hourly/daily patterns)
+  - Desktop notifications when usage exceeds thresholds
+- **Distribution**:
+  - Add `pyproject.toml` with dependencies (rumps, matplotlib)
+  - Explore py2app or Homebrew formula for easier install
+  - Test on clean macOS with Python from python.org/Homebrew
 
 ### Moved or Renamed Files
 
-- None
+- **storage.py** (new, 285 lines)
+- **token_tracker.py** (modified extensively)
+- **README.md** (restructured graphs section)
 
 ### Deletion Candidates
 
@@ -101,4 +115,3 @@ git push origin main
 ---
 
 *Handoff generated by Claude Code on 2026-03-16.*
-

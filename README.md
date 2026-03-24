@@ -137,7 +137,9 @@ Example `config.toml`:
 ```toml
 [display]
 poll_interval = 10
-context_limit = 262144
+# Context window size (in tokens) for your Claude model.
+# Default is 256000 for stepfun step-3.5-flash. Adjust for other providers/models.
+context_limit = 256000
 warn_pct = 60
 critical_pct = 85
 # Session label style: "basename", "path2", "full", or "custom"
@@ -163,6 +165,11 @@ tail_read_bytes = 524288
 ```
 
 Configuration is reloaded on app restart.
+
+### Important Notes
+
+- The context usage percentage accounts for **both input and output tokens**. This reflects total context pressure and helps you know when to compact.
+- Only sessions active within the last 30 minutes are shown. Older sessions are hidden automatically, preventing stale data from appearing.
 
 ### Session Label Formats
 

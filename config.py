@@ -13,7 +13,7 @@ from typing import Any
 DEFAULTS = {
     "display": {
         "poll_interval": 10,
-        "context_limit": 262144,
+        "context_limit": 256000,
         "warn_pct": 60,
         "critical_pct": 85,
         "label_style": "path2",  # "basename", "path2", "full", "custom"

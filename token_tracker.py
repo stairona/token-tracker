@@ -151,10 +151,6 @@ def _project_slug_from_cwd(cwd: str) -> str:
 
 def _read_tokens(path: str):
     """Read (input_tokens, output_tokens, cwd, session_id) from most recent non-zero usage entry."""
-    inp = out = 0
-    cwd = ""
-    session_id = ""
-    sig = (0, 0)
     try:
         stat = os.stat(path)
         sig = (stat.st_mtime, stat.st_size)
@@ -169,14 +165,12 @@ def _read_tokens(path: str):
             return cached[1], cached[2], cached[3], cached[4]
 
         def parse_lines(lines):
-            nonlocal inp, out, cwd, session_id
+            """Return (inp, out, cwd, session_id) if a usage entry is found, else None."""
             for line in reversed(lines):
                 try:
                     e = json.loads(line.strip())
-                    if not cwd:
-                        cwd = e.get("cwd", "")
-                    if not session_id:
-                        session_id = e.get("sessionId", "")
+                    cwd = e.get("cwd", "")
+                    session_id = e.get("sessionId", "")
                     msg = e.get("message", {})
                     if not isinstance(msg, dict):
                         continue
@@ -186,11 +180,10 @@ def _read_tokens(path: str):
                     i = u.get("input_tokens", 0) or 0
                     o = u.get("output_tokens", 0) or 0
                     if i or o:
-                        inp, out = i, o
-                        return True
+                        return i, o, cwd, session_id
                 except (json.JSONDecodeError, KeyError, ValueError):
                     continue
-            return False
+            return None
 
         with open(path, "rb") as f:
             size = stat.st_size
@@ -202,23 +195,31 @@ def _read_tokens(path: str):
                 lines = parts[1:] if len(parts) > 1 else []
             else:
                 lines = chunk.splitlines()
-            found = parse_lines(lines)
+            result = parse_lines(lines)
+            if result is not None:
+                inp, out, cwd, session_id = result
+                _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
+                return inp, out, cwd, session_id
 
-            if not found and start > 0:
-                # Rare: the non-zero entry might be before the tail; read whole file as fallback
-                # But only if file isn't huge (already checked)
+            # Fallback: read full file if tail didn't find usage
+            if start > 0:
                 f.seek(0)
-                full_lines = f.read().decode("utf-8", errors="replace").splitlines()
-                parse_lines(full_lines)
+                full_chunk = f.read().decode("utf-8", errors="replace")
+                full_lines = full_chunk.splitlines()
+                result = parse_lines(full_lines)
+                if result is not None:
+                    inp, out, cwd, session_id = result
+                    _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
+                    return inp, out, cwd, session_id
+
+        # No usage found in file
+        return 0, 0, "", ""
+
     except Exception as e:
         # Comprehensive catch: OSError, JSON errors, etc.
         # Do not propagate; just return zeros and log minimal message to avoid spam
-        # Use print since logging may not be configured.
         print(f"[token-tracker] error reading {path}: {e}")
-    finally:
-        # Always update cache with what we found (could be zeros)
-        _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
-    return inp, out, cwd, session_id
+        return 0, 0, "", ""
 
 
 def get_sessions():
@@ -266,7 +267,8 @@ def get_sessions():
             # Don't let one bad file break the whole poll
             print(f"[token-tracker] skip {path}: {e}")
             continue
-        pct = (inp / CONTEXT_LIMIT * 100) if inp else 0.0
+        total = inp + out
+        pct = (total / CONTEXT_LIMIT * 100) if total else 0.0
         label = _make_label(cwd, Path(path).parent.name, pct)
         # Use (cwd, session_id) as dedup key to allow multiple sessions in same project
         session_key = (cwd, session_id)
@@ -284,9 +286,8 @@ def get_sessions():
             "active": (now - mtime) <= ACTIVE_WINDOW,
         })
 
-    # Always return at least the most recent session even if outside window
-    active = [s for s in sessions if s["active"]]
-    return active if active else sessions[:1]
+    # Return only sessions modified within the active window
+    return [s for s in sessions if s["active"]]
 
 
 # ── Handoff prompt ────────────────────────────────────────────────────────────
@@ -301,12 +302,13 @@ def build_handoff_prompt(session: dict) -> str:
         handoff_path = str(HANDOFF_ROOT / "projects" / f"{slug}.md")
     else:
         handoff_path = str(Path(cwd) / "SESSION_HANDOFF.md") if cwd != "unknown" else "SESSION_HANDOFF.md"
+    total = inp + out
     return (
-        f"Context is at {pct:.0f}% ({inp:,} / {CONTEXT_LIMIT:,} tokens). "
+        f"Context is at {pct:.0f}% (in: {inp:,}, out: {out:,}, total {total:,} / {CONTEXT_LIMIT:,} tokens). "
         f"Please update {handoff_path} with:\n"
         f"- Date: {now}\n"
         f"- Project: {session['label']} | cwd: {cwd}\n"
-        f"- Context: {pct:.0f}% ({inp:,} in / {out:,} out)\n"
+        f"- Context: {pct:.0f}% (in: {inp:,}, out: {out:,}, total {total:,})\n"
         f"- What was accomplished this session\n"
         f"- Current git branch and last commit\n"
         f"- Files changed or created\n"
@@ -557,13 +559,15 @@ class TokenTrackerApp(rumps.App):
         self._maybe_send_notification(pct, label)
 
         # Menu bar — show usage/total clearly
-        self.title = f"{icon(pct)} {format_tokens(inp)}/{format_limit(CONTEXT_LIMIT)}"
+        total = inp + out
+        self.title = f"{icon(pct)} {format_tokens(total)}/{format_limit(CONTEXT_LIMIT)}"
 
         # Dropdown
         self.item_tokens.title  = f"In: {inp:,}   Out: {out:,} tokens"
+        total = inp + out
         self.item_ctx.title     = (
             f"Context: {bar} {pct:.0f}%"
-            f"  ({format_tokens(inp)}/{format_tokens(CONTEXT_LIMIT)})"
+            f"  ({format_tokens(total)}/{format_tokens(CONTEXT_LIMIT)})"
         )
         self.item_project.title = f"Project: {label}"
 
@@ -828,7 +832,9 @@ class TokenTrackerApp(rumps.App):
                     f.write("# Changes require app restart to take effect.\n\n")
                     f.write("[display]\n")
                     f.write("poll_interval = 10\n")
-                    f.write("context_limit = 262144\n")
+                    f.write("# Context window size (in tokens) for your Claude model.\n")
+                    f.write("# Default is 256000 for stepfun step-3.5-flash. Adjust for other providers.\n")
+                    f.write("context_limit = 256000\n")
                     f.write("warn_pct = 60\n")
                     f.write("critical_pct = 85\n")
                     f.write("# Label style for sessions: basename, path2, full, or custom\n")

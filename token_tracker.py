@@ -146,16 +146,34 @@ def _make_label(cwd: str, folder_name: str, pct: float = 0.0) -> str:
 
 
 def _project_slug_from_cwd(cwd: str) -> str:
-    """Derive a project slug from cwd, preferring the segment after light-projects."""
+    """
+    Derive a project slug from cwd.
+    Checks for known workspace structures:
+    1. After 'light-projects' (old structure): /path/to/light-projects/<project>
+    2. After 'zprojects' (new workspace): /path/to/zprojects/<project>
+    Falls back to last path component.
+    """
     if not cwd:
         return "unknown"
     parts = Path(cwd).parts
+
+    # Try old structure: look for "light-projects"
     try:
         idx = parts.index("light-projects")
         if idx + 1 < len(parts):
             return parts[idx + 1]
     except ValueError:
         pass
+
+    # Try new workspace structure: look for "zprojects"
+    try:
+        idx = parts.index("zprojects")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    except ValueError:
+        pass
+
+    # Fallback: use immediate directory name (may be incorrect for subdirs)
     return Path(cwd).name or "unknown"
 
 
@@ -271,7 +289,8 @@ def get_sessions():
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        if path != newest and (now - mtime) > ACTIVE_WINDOW:
+        # Skip files outside the active window (including the newest)
+        if (now - mtime) > ACTIVE_WINDOW:
             continue
         try:
             inp, out, cwd, session_id = _read_tokens(path)
@@ -280,6 +299,9 @@ def get_sessions():
             print(f"[token-tracker] skip {path}: {e}")
             continue
         total = inp + out
+        # Skip sessions with zero token usage (not fully initialized or inactive)
+        if total == 0:
+            continue
         pct = (total / CONTEXT_LIMIT * 100) if total else 0.0
         label = _make_label(cwd, Path(path).parent.name, pct)
         # Use (cwd, session_id) as dedup key to allow multiple sessions in same project
@@ -613,7 +635,8 @@ class TokenTrackerApp(rumps.App):
                 s = sessions[i]
                 is_selected = s.get("session_id") == self._handoff_target_key
                 prefix = "✓ " if is_selected else "  "
-                item.title = f"{prefix}{s['label']} — {s['input_tokens']:,}/{s['output_tokens']:,} tokens ({_short_cwd(s['cwd'])})"
+                cwd_display = _short_cwd(s.get('cwd', ''))
+                item.title = f"{prefix}{s['label']} — {s['input_tokens']:,}/{s['output_tokens']:,} tokens ({cwd_display})"
                 item.hidden = False
                 item.enabled = True
             else:
@@ -895,22 +918,50 @@ class TokenTrackerApp(rumps.App):
             rumps.alert("No session selected", "Please select a session from the list first.")
             return
         try:
-            import tkinter as tk
-            from tkinter import simpledialog
-        except ImportError:
-            rumps.alert("Error", "Tkinter is required for renaming sessions.")
-            return
-        root = tk.Tk()
-        root.withdraw()
-        current_name = self._handoff_target.get('label', '')
-        new_name = simpledialog.askstring("Rename Session", "Enter new name:", initialvalue=current_name)
-        root.destroy()
-        if new_name and new_name.strip():
-            new_name = new_name.strip()
-            key = f"{self._handoff_target['cwd']}||{self._handoff_target['session_id']}"
-            self._custom_names[key] = new_name
-            self._save_custom_names()
-            self._refresh_requested.set()
+            import subprocess
+            import json
+            import sys
+
+            current_name = self._handoff_target.get('label', '')
+            session_key = f"{self._handoff_target['cwd']}||{self._handoff_target['session_id']}"
+
+            # Use a separate process for Tkinter dialog to avoid rumps/Tkinter conflict
+            script = f'''
+import tkinter as tk
+from tkinter import simpledialog
+import sys
+import json
+
+root = tk.Tk()
+root.withdraw()
+root.attributes('-topmost', True)
+new_name = simpledialog.askstring("Rename Session", "Enter new name:", initialvalue={json.dumps(current_name)})
+root.destroy()
+if new_name and new_name.strip():
+    print(new_name.strip())
+'''
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                new_name = result.stdout.strip()
+                if new_name:
+                    self._custom_names[session_key] = new_name
+                    self._save_custom_names()
+                    self._refresh_requested.set()
+            else:
+                # User likely cancelled or error occurred
+                pass
+        except subprocess.TimeoutExpired:
+            rumps.alert("Rename Error", "Rename dialog timed out.")
+        except Exception as e:
+            import traceback
+            error_msg = f"Rename failed: {e}\n{traceback.format_exc()}"
+            print(error_msg, flush=True)
+            rumps.alert("Rename Error", f"Failed to rename session:\n{e}")
 
     def _load_custom_names(self):
         """Load custom session names from JSON file."""
@@ -950,6 +1001,7 @@ def _short_cwd(cwd: str) -> str:
     if len(parts) <= 3:
         return display
     return os.sep.join(["…", parts[-2], parts[-1]])
+
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────

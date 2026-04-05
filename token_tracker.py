@@ -22,16 +22,26 @@ from pathlib import Path
 from storage import get_storage
 from config import get_config
 import csv
+import json
+
+# Custom session names storage
+CUSTOM_NAMES_PATH = Path.home() / ".config" / "token-tracker" / "session_names.json"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _config = get_config()
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
-HANDOFF_ROOT_ENV = os.getenv("HANDOFF_ROOT")
-HANDOFF_ROOT = Path(HANDOFF_ROOT_ENV) if HANDOFF_ROOT_ENV else None
+# HANDOFF_ROOT: config takes precedence, fallback to env var
+_config_handoff_root = _config.HANDOFF_ROOT
+if _config_handoff_root:
+    HANDOFF_ROOT = _config_handoff_root
+else:
+    HANDOFF_ROOT_ENV = os.getenv("HANDOFF_ROOT")
+    HANDOFF_ROOT = Path(HANDOFF_ROOT_ENV) if HANDOFF_ROOT_ENV else None
 POLL_INTERVAL = _config.POLL_INTERVAL
 CONTEXT_LIMIT = _config.CONTEXT_LIMIT
-ACTIVE_WINDOW = 1800     # seconds — session shown if modified within 30 min (hard-coded for now)
+ACTIVE_WINDOW = _config.ACTIVE_WINDOW
+INCLUDE_SUBAGENTS = _config.INCLUDE_SUBAGENTS
 WARN_PCT = _config.WARN_PCT
 CRITICAL_PCT = _config.CRITICAL_PCT
 ENABLE_NOTIFICATIONS = _config.ENABLE_NOTIFICATIONS
@@ -230,7 +240,9 @@ def get_sessions():
     """
     pattern = str(CLAUDE_PROJECTS_DIR / "**" / "*.jsonl")
     try:
-        all_files = [f for f in glob.glob(pattern, recursive=True) if "subagents" not in f]
+        all_files = glob.glob(pattern, recursive=True)
+        if not INCLUDE_SUBAGENTS:
+            all_files = [f for f in all_files if "subagents" not in f]
     except Exception as e:
         print(f"[token-tracker] glob error: {e}")
         return []
@@ -299,7 +311,7 @@ def build_handoff_prompt(session: dict) -> str:
     now  = datetime.now().strftime("%Y-%m-%d %H:%M")
     if HANDOFF_ROOT:
         slug = _project_slug_from_cwd(cwd).lower().replace(" ", "-")
-        handoff_path = str(HANDOFF_ROOT / "projects" / f"{slug}.md")
+        handoff_path = str(HANDOFF_ROOT / f"{slug}.md")
     else:
         handoff_path = str(Path(cwd) / "SESSION_HANDOFF.md") if cwd != "unknown" else "SESSION_HANDOFF.md"
     total = inp + out
@@ -392,6 +404,7 @@ class TokenTrackerApp(rumps.App):
         self.item_handoff  = rumps.MenuItem("📋 Copy handoff prompt", callback=self._on_handoff)
         self.item_updated  = rumps.MenuItem("Updated: —")
         self.item_refresh  = rumps.MenuItem("Refresh now", callback=self._on_refresh)
+        self.item_rename    = rumps.MenuItem("Rename Selected Session...", callback=self._on_rename_selected)
         self.item_prefs    = rumps.MenuItem("Preferences...", callback=self._on_preferences)
         self.item_quit     = rumps.MenuItem("Quit", callback=rumps.quit_application)
 
@@ -410,6 +423,7 @@ class TokenTrackerApp(rumps.App):
             self.item_tip,
             self.item_updated,
             self.item_refresh,
+            self.item_rename,
             self.item_prefs,
             None,
             self.item_quit,
@@ -425,6 +439,7 @@ class TokenTrackerApp(rumps.App):
         self._handoff_flash_until = 0.0
         self._storage = get_storage()
         self._last_cleanup = time.time()
+        self._custom_names = self._load_custom_names()
         # Graph window state
         self._graph_window = None
         self._graph_root = None
@@ -474,6 +489,11 @@ class TokenTrackerApp(rumps.App):
                 state = self._latest_state
                 self._latest_state = None
         if state:
+            # Apply custom name overrides to sessions
+            for s in state["sessions"]:
+                key = f"{s['cwd']}||{s['session_id']}"
+                if key in self._custom_names:
+                    s["label"] = self._custom_names[key]
             self._apply_state(state["sessions"], state["now_str"], state["error"])
         self._maybe_clear_handoff_flash()
 
@@ -593,7 +613,7 @@ class TokenTrackerApp(rumps.App):
                 s = sessions[i]
                 is_selected = s.get("session_id") == self._handoff_target_key
                 prefix = "✓ " if is_selected else "  "
-                item.title = f"{prefix}{s['label']} ({_short_cwd(s['cwd'])})"
+                item.title = f"{prefix}{s['label']} — {s['input_tokens']:,}/{s['output_tokens']:,} tokens ({_short_cwd(s['cwd'])})"
                 item.hidden = False
                 item.enabled = True
             else:
@@ -837,6 +857,10 @@ class TokenTrackerApp(rumps.App):
                     f.write("context_limit = 256000\n")
                     f.write("warn_pct = 60\n")
                     f.write("critical_pct = 85\n")
+                    f.write("# Active window (seconds) for session to be considered active\n")
+                    f.write("active_window = 1800\n")
+                    f.write("# Include subagent sessions in the list\n")
+                    f.write("include_subagents = false\n")
                     f.write("# Label style for sessions: basename, path2, full, or custom\n")
                     f.write("label_style = path2\n")
                     f.write("# Template for custom labels (e.g., \"{basename} [{pct:.0f}%]\"; see README)\n")
@@ -852,7 +876,11 @@ class TokenTrackerApp(rumps.App):
                     f.write("max_files_to_scan = 50\n")
                     f.write("poll_budget_sec = 8\n")
                     f.write("file_op_timeout = 5\n")
-                    f.write("tail_read_bytes = 524288\n")
+                    f.write("tail_read_bytes = 524288\n\n")
+                    f.write("[handoff]\n")
+                    f.write("# Path to the central session-handoffs folder (optional)\n")
+                    f.write("# If empty, uses HANDOFF_ROOT env var or current project directory\n")
+                    f.write("handoff_root = \"\"\n")
             except Exception as e:
                 rumps.alert("Config Error", f"Failed to create config file:\n{e}")
                 return
@@ -860,6 +888,48 @@ class TokenTrackerApp(rumps.App):
             subprocess.run(["open", str(config_path)], check=True)
         except Exception as e:
             rumps.alert("Failed", f"Could not open config file:\n{e}")
+
+    def _on_rename_selected(self, _):
+        """Rename the selected session."""
+        if not self._handoff_target:
+            rumps.alert("No session selected", "Please select a session from the list first.")
+            return
+        try:
+            import tkinter as tk
+            from tkinter import simpledialog
+        except ImportError:
+            rumps.alert("Error", "Tkinter is required for renaming sessions.")
+            return
+        root = tk.Tk()
+        root.withdraw()
+        current_name = self._handoff_target.get('label', '')
+        new_name = simpledialog.askstring("Rename Session", "Enter new name:", initialvalue=current_name)
+        root.destroy()
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            key = f"{self._handoff_target['cwd']}||{self._handoff_target['session_id']}"
+            self._custom_names[key] = new_name
+            self._save_custom_names()
+            self._refresh_requested.set()
+
+    def _load_custom_names(self):
+        """Load custom session names from JSON file."""
+        try:
+            if CUSTOM_NAMES_PATH.exists():
+                with open(CUSTOM_NAMES_PATH, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"[token-tracker] error loading custom session names: {e}")
+        return {}
+
+    def _save_custom_names(self):
+        """Save custom session names to JSON file."""
+        try:
+            CUSTOM_NAMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(CUSTOM_NAMES_PATH, 'w') as f:
+                json.dump(self._custom_names, f, indent=2)
+        except Exception as e:
+            print(f"[token-tracker] error saving custom session names: {e}")
 
     def _make_session_select_handler(self, index: int):
         def _handler(_):

@@ -128,6 +128,47 @@ Historical data is stored in `~/.cache/token-tracker/usage.db` with 90-day reten
 
 When context usage crosses the warning (60%) or critical (85%) thresholds, the app sends a desktop notification. Notifications can be disabled in the configuration file.
 
+## Session Management
+
+### Custom Session Names
+
+You can rename any active session to something more meaningful:
+
+1. Select a session from the list (a checkmark ✓ appears)
+2. Click **"Rename Selected Session..."** in the menu
+3. Enter your preferred name
+4. The new name appears immediately and persists across restarts
+
+Custom names are stored in `~/.config/token-tracker/session_names.json` and override the automatically generated labels.
+
+### Token Counts in Session List
+
+The session dropdown displays token counts for each session:
+```
+✓ My Project — 12,345/23,456 tokens (~/path/to/project)
+```
+This helps you quickly identify which sessions are using the most context.
+
+### Showing More or Fewer Sessions
+
+By default, only sessions active within the last 30 minutes are shown. To adjust this window, set `active_window` in your config:
+
+```toml
+[display]
+active_window = 7200  # Show sessions from the last 2 hours
+```
+
+### Subagent Sessions
+
+Subagent sessions (from tools like `/ symbiotic`) are hidden by default to keep the menu clean. To show them:
+
+```toml
+[display]
+include_subagents = true
+```
+
+---
+
 ## Configuration
 
 Token Tracker can be customized via `~/.config/token-tracker/config.toml`. If the file doesn't exist, choose **Preferences...** from the menu to create a default one.
@@ -142,6 +183,10 @@ poll_interval = 10
 context_limit = 256000
 warn_pct = 60
 critical_pct = 85
+# Active window (seconds) — sessions modified within this time are shown
+active_window = 1800
+# Include subagent sessions in the list
+include_subagents = false
 # Session label style: "basename", "path2", "full", or "custom"
 label_style = "path2"
 # Template for custom labels when label_style = "custom"
@@ -162,6 +207,10 @@ max_files_to_scan = 50
 poll_budget_sec = 8
 file_op_timeout = 5
 tail_read_bytes = 524288
+
+[handoff]
+# Central handoff folder (optional, defaults to project-local SESSION_HANDOFF.md)
+# handoff_root = "/Users/nicolasaguirre/zprojects/claude/session-handoffs"
 ```
 
 Configuration is reloaded on app restart.
@@ -169,7 +218,7 @@ Configuration is reloaded on app restart.
 ### Important Notes
 
 - The context usage percentage accounts for **both input and output tokens**. This reflects total context pressure and helps you know when to compact.
-- Only sessions active within the last 30 minutes are shown. Older sessions are hidden automatically, preventing stale data from appearing.
+- Only sessions active within the `active_window` (default 30 minutes) are shown. Older sessions are hidden automatically, preventing stale data from appearing. Adjust `active_window` in config if you need to see older sessions.
 
 ### Session Label Formats
 

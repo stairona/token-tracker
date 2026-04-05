@@ -7,7 +7,7 @@ Supports ~/.config/token-tracker/config.toml with fallback to defaults.
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Default configuration values
 DEFAULTS = {
@@ -16,6 +16,8 @@ DEFAULTS = {
         "context_limit": 256000,
         "warn_pct": 60,
         "critical_pct": 85,
+        "active_window": 1800,  # seconds — session considered active if modified within this window
+        "include_subagents": False,  # whether to include subagent sessions in the list
         "label_style": "path2",  # "basename", "path2", "full", "custom"
         "custom_label_template": "",  # e.g., "{cwd}" or "{basename} - {pct}%"
     },
@@ -33,6 +35,9 @@ DEFAULTS = {
         "poll_budget_sec": 8,
         "file_op_timeout": 5,
         "tail_read_bytes": 524288,  # 512 * 1024
+    },
+    "handoff": {
+        "handoff_root": "",  # Path to session-handoffs folder (e.g., ~/.claude/session-handoffs)
     },
 }
 
@@ -83,6 +88,14 @@ class Config:
         return self.get("display", "critical_pct")
 
     @property
+    def ACTIVE_WINDOW(self) -> int:
+        return self.get("display", "active_window")
+
+    @property
+    def INCLUDE_SUBAGENTS(self) -> bool:
+        return self.get("display", "include_subagents", False)
+
+    @property
     def MIN_TOKENS_FOR_SNAPSHOT(self) -> int:
         return self.get("storage", "min_tokens_for_snapshot")
 
@@ -125,6 +138,17 @@ class Config:
     @property
     def CUSTOM_LABEL_TEMPLATE(self) -> str:
         return self.get("display", "custom_label_template")
+
+    @property
+    def HANDOFF_ROOT(self) -> Optional[Path]:
+        """Return handoff root path if configured, else None."""
+        path_str = self.get("handoff", "handoff_root", "")
+        if path_str:
+            try:
+                return Path(path_str).expanduser()
+            except Exception:
+                return None
+        return None
 
     @property
     def config_path(self) -> Path:

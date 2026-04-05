@@ -1,11 +1,6 @@
-# Development Workspace Rules
+# Token Tracker — Development Rules
 
 This file applies to this folder and everything below it.
-
-## Repository Boundaries
-- `Development` is its own repository (token-tracker root).
-- Projects inside `light-projects/` are independent repositories.
-- Never stage nested project folders in the parent repository.
 
 ## File Safety (Hard Rule)
 - No file or folder deletions.
@@ -17,5 +12,6 @@ This file applies to this folder and everything below it.
 - "Deletion Candidates": path, reason, risk level, and suggested command for manual deletion (user-run only).
 
 ## Git Safety
-- In each command, verify the current repository before staging/committing.
+- Always verify current repository before staging/committing.
 - Never mix changes across repositories.
+- Keep commits small and well-described.

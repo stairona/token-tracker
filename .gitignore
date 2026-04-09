@@ -6,3 +6,15 @@ venv/
 light-projects/
 .claude-flow/
 test_*.py
+
+# Personal/workspace files — never commit these
+plan.md
+CLAUDE.md
+*SESSION_HANDOFF*
+*HANDOFF*
+*_PLAN.md
+AI_TOOLS_RULES.md
+DEVELOPMENT_GUIDE.md
+PROJECTS_ORGANIZATION.md
+GHOSTTY_INTEGRATION_PLAN.md
+CLAUDE_CODE_PROMPTS.md

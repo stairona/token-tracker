@@ -1,5 +1,7 @@
 # Token Tracker
 
+![Python](https://img.shields.io/badge/python-3.11%2B-blue) ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
+
 Real-time token usage for Claude Code in your macOS menu bar.
 
 ## What It Does
@@ -69,13 +71,13 @@ Add this to your `~/.zshrc` to run the tracker when you start Claude Code:
 ```zsh
 function claude() {
   pkill -f token_tracker 2>/dev/null
-  /opt/homebrew/bin/python3.11 /path/to/token-tracker/token_tracker.py &
+  /opt/homebrew/bin/python3.11 ~/token-tracker/token_tracker.py &
   command claude "$@"
   pkill -f token_tracker 2>/dev/null
 }
 ```
 
-Replace `/path/to/token-tracker/` with your actual path.
+Replace `~/token-tracker/` with the path where you cloned the repo.
 
 ## Menu Bar Indicators
 
@@ -210,7 +212,7 @@ tail_read_bytes = 524288
 
 [handoff]
 # Central handoff folder (optional, defaults to project-local SESSION_HANDOFF.md)
-# handoff_root = "/Users/nicolasaguirre/zprojects/claude/session-handoffs"
+# handoff_root = "~/path/to/session-handoffs"
 ```
 
 Configuration is reloaded on app restart.

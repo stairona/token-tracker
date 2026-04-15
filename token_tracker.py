@@ -17,7 +17,7 @@ import glob
 import time
 import threading
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from storage import get_storage
 from config import get_config
@@ -26,6 +26,24 @@ import json
 
 # Custom session names storage
 CUSTOM_NAMES_PATH = Path.home() / ".config" / "token-tracker" / "session_names.json"
+
+# ── Timestamp parsing ─────────────────────────────────────────────────────────
+def _parse_timestamp(ts_str: str) -> float:
+    """Parse ISO 8601 timestamp from Claude session file to Unix epoch.
+    Returns 0.0 on failure."""
+    if not ts_str:
+        return 0.0
+    try:
+        # Handle 'Z' suffix which indicates UTC
+        if ts_str.endswith('Z'):
+            ts_str = ts_str[:-1] + '+00:00'
+        dt = datetime.fromisoformat(ts_str)
+        # Ensure timezone-aware; if naive, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return 0.0
 
 # ── Config ────────────────────────────────────────────────────────────────────
 _config = get_config()
@@ -178,7 +196,8 @@ def _project_slug_from_cwd(cwd: str) -> str:
 
 
 def _read_tokens(path: str):
-    """Read (input_tokens, output_tokens, cwd, session_id) from most recent non-zero usage entry."""
+    """Read (input_tokens, output_tokens, cwd, session_id, usage_ts) from most recent non-zero usage entry.
+    usage_ts is the Unix timestamp of that entry (0 if parsing fails)."""
     try:
         stat = os.stat(path)
         sig = (stat.st_mtime, stat.st_size)
@@ -186,14 +205,15 @@ def _read_tokens(path: str):
         # Skip extremely large files to avoid memory/time issues (unlikely but safe)
         if stat.st_size > 100_000_000:  # 100 MB
             print(f"[token-tracker] skip large file: {path} ({stat.st_size} bytes)")
-            return 0, 0, "", ""
+            return 0, 0, "", "", 0.0
 
         cached = _TOKEN_CACHE.get(path)
         if cached and cached[0] == sig:
-            return cached[1], cached[2], cached[3], cached[4]
+            # cached: (sig, inp, out, cwd, session_id, usage_ts)
+            return cached[1], cached[2], cached[3], cached[4], cached[5]
 
         def parse_lines(lines):
-            """Return (inp, out, cwd, session_id) if a usage entry is found, else None."""
+            """Return (inp, out, cwd, session_id, usage_ts) if a usage entry is found, else None."""
             for line in reversed(lines):
                 try:
                     e = json.loads(line.strip())
@@ -208,7 +228,9 @@ def _read_tokens(path: str):
                     i = u.get("input_tokens", 0) or 0
                     o = u.get("output_tokens", 0) or 0
                     if i or o:
-                        return i, o, cwd, session_id
+                        ts_str = e.get("timestamp", "")
+                        ts = _parse_timestamp(ts_str)
+                        return i, o, cwd, session_id, ts
                 except (json.JSONDecodeError, KeyError, ValueError):
                     continue
             return None
@@ -225,9 +247,9 @@ def _read_tokens(path: str):
                 lines = chunk.splitlines()
             result = parse_lines(lines)
             if result is not None:
-                inp, out, cwd, session_id = result
-                _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
-                return inp, out, cwd, session_id
+                inp, out, cwd, session_id, usage_ts = result
+                _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id, usage_ts)
+                return inp, out, cwd, session_id, usage_ts
 
             # Fallback: read full file if tail didn't find usage
             if start > 0:
@@ -236,18 +258,18 @@ def _read_tokens(path: str):
                 full_lines = full_chunk.splitlines()
                 result = parse_lines(full_lines)
                 if result is not None:
-                    inp, out, cwd, session_id = result
-                    _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id)
-                    return inp, out, cwd, session_id
+                    inp, out, cwd, session_id, usage_ts = result
+                    _TOKEN_CACHE[path] = (sig, inp, out, cwd, session_id, usage_ts)
+                    return inp, out, cwd, session_id, usage_ts
 
         # No usage found in file
-        return 0, 0, "", ""
+        return 0, 0, "", "", 0.0
 
     except Exception as e:
         # Comprehensive catch: OSError, JSON errors, etc.
         # Do not propagate; just return zeros and log minimal message to avoid spam
         print(f"[token-tracker] error reading {path}: {e}")
-        return 0, 0, "", ""
+        return 0, 0, "", "", 0.0
 
 
 def get_sessions():
@@ -293,7 +315,7 @@ def get_sessions():
         if (now - mtime) > ACTIVE_WINDOW:
             continue
         try:
-            inp, out, cwd, session_id = _read_tokens(path)
+            inp, out, cwd, session_id, usage_ts = _read_tokens(path)
         except Exception as e:
             # Don't let one bad file break the whole poll
             print(f"[token-tracker] skip {path}: {e}")
@@ -301,6 +323,17 @@ def get_sessions():
         total = inp + out
         # Skip sessions with zero token usage (not fully initialized or inactive)
         if total == 0:
+            continue
+        # Determine if session is active based on last token usage timestamp, not file mtime.
+        # This avoids "ghost sessions" that have recent file activity (e.g., user messages)
+        # but no recent assistant responses.
+        if usage_ts == 0:
+            # If we couldn't parse a usage timestamp, fall back to file mtime
+            is_active = (now - mtime) <= ACTIVE_WINDOW
+        else:
+            is_active = (now - usage_ts) <= ACTIVE_WINDOW
+        # Skip sessions that are not active according to usage timestamp
+        if not is_active:
             continue
         pct = (total / CONTEXT_LIMIT * 100) if total else 0.0
         label = _make_label(cwd, Path(path).parent.name, pct)
@@ -317,7 +350,8 @@ def get_sessions():
             "session_id": session_id,
             "pct": pct,
             "mtime": mtime,
-            "active": (now - mtime) <= ACTIVE_WINDOW,
+            "usage_ts": usage_ts,
+            "active": is_active,
         })
 
     # Return only sessions modified within the active window

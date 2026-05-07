@@ -7,6 +7,11 @@ light-projects/
 .claude-flow/
 test_*.py
 
+# Claude/Ruflo tooling artifacts
+.claude/
+.claudeignore
+design-system/
+
 # Personal/workspace files — never commit these
 plan.md
 CLAUDE.md
